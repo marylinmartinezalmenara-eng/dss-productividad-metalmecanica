@@ -6,8 +6,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title='DSS | AS IS vs TO BE', page_icon='🏭', layout='wide')
+st.markdown('''<style>
+.block-container {padding-top:1.6rem; max-width:1600px}
+[data-testid="stMetric"] {border:1px solid #d9dfe5; border-radius:10px; padding:12px; background:#fff}
+[data-testid="stMetricLabel"] {font-weight:650}
+h1,h2,h3 {letter-spacing:-0.025em}
+</style>''', unsafe_allow_html=True)
 st.title('DSS | Productividad de mano de obra')
-st.caption('AS IS vs TO BE · 5S + SLP + TPM · Caso metalmecánico · Prototipo experimental')
+st.caption('Caso metalmecánico · 5S + SLP + TPM · IoT simulado · Datos modelados para fines académicos')
 
 REQUIRED = {
  'INDICADORES': ['Indicador','Valor','Unidad'],
@@ -40,7 +46,7 @@ def read_data(file_bytes):
 def download_csv(df, filename, label='Descargar CSV'):
     st.download_button(label, data=df.to_csv(index=False).encode('utf-8-sig'), file_name=filename, mime='text/csv')
 
-uploaded = st.file_uploader('Carga DSS_CHECKPOINT_08_INTEGRADO.xlsx', type='xlsx')
+uploaded = st.sidebar.file_uploader('Cargar Checkpoint 08 (.xlsx)', type='xlsx')
 if uploaded is None:
     st.info('Carga el archivo del Checkpoint 08 para activar el simulador y los módulos del DSS.')
     st.stop()
@@ -74,14 +80,72 @@ if sum(loss_map.values()) > hh + 0.02:
 
 st.sidebar.header('Navegación')
 menu = st.sidebar.radio('Módulo', [
-    'AS IS vs TO BE', 'Resumen ejecutivo', 'Diagnóstico',
+    'Dashboard integrado', 'AS IS vs TO BE', 'Resumen ejecutivo', 'Diagnóstico',
     'Recomendaciones', 'Escenarios originales', 'Monitoreo IoT',
     'Trazabilidad y límites'
 ])
 st.sidebar.divider()
 st.sidebar.caption('Fuente: Checkpoint 08. Los datos empresariales son modelados y las mejoras son hipótesis, no resultados observados.')
 
-if menu == 'AS IS vs TO BE':
+if menu == 'Dashboard integrado':
+    st.header('Dashboard integrado · diagnóstico general')
+    st.caption('Indicadores de la situación AS IS. El TO BE se calcula únicamente en el simulador interactivo.')
+    total_lost = float(losses['HH_perdidas'].sum())
+    overtime_rate = extra/hh*100
+    a,b,c,d = st.columns(4)
+    a.metric('Productividad física AS IS',f'{physical/hh:.5f} tanques/HH')
+    b.metric('Productividad equivalente AS IS',f'{te/hh:.5f} TE/HH')
+    c.metric('Horas extra / HH',f'{overtime_rate:.2f}%')
+    d.metric('HH perdidas clasificadas',f'{total_lost:,.2f} HH')
+
+    left,right = st.columns([1.35,1],gap='large')
+    with left:
+        st.subheader('Pérdidas cuantificadas por herramienta')
+        g = losses.groupby('Grupo DSS',as_index=False)['HH_perdidas'].sum().sort_values('HH_perdidas')
+        fig = px.bar(g,x='HH_perdidas',y='Grupo DSS',orientation='h',text='HH_perdidas',
+                     labels={'HH_perdidas':'Horas-hombre perdidas','Grupo DSS':'Grupo'})
+        fig.update_traces(marker_color='#37678a',texttemplate='%{text:.2f}',textposition='outside')
+        fig.update_layout(height=320,margin=dict(l=10,r=45,t=10,b=20),showlegend=False)
+        st.plotly_chart(fig,use_container_width=True)
+    with right:
+        st.subheader('Recomendaciones priorizadas')
+        rec = data['DECISIONES_DSS'].sort_values('Prioridad').copy()
+        st.dataframe(rec[['Prioridad','Problema','Herramienta','HH perdidas','Acción recomendada']].head(5),
+                     hide_index=True,use_container_width=True,height=295)
+
+    colplan,coltrend = st.columns([1.35,1],gap='large')
+    with colplan:
+        st.subheader('Distribución actual de planta · SLP')
+        from pathlib import Path
+        path = Path(__file__).with_name('layout_actual.png')
+        if path.exists():
+            st.image(str(path),caption='Plano proporcionado: distribución AS IS (áreas A–I). No representa rutas ni distancias medidas.',use_container_width=True)
+        else:
+            st.warning('Para visualizar el plano, sube layout_actual.png a la raíz del repositorio.')
+        with st.expander('Identificación de áreas del plano'):
+            areas = {'A':'Vestuario','B':'Área administrativa','C':'Área de corte',
+                     'D':'Pintura / almacén de pinturas','E':'Baños y lavado',
+                     'F':'Área de arenado','G':'Almacén de planchas',
+                     'H':'Almacén de repuestos y máquinas','I':'Patio de maniobras'}
+            st.dataframe(pd.DataFrame({'Área':list(areas),'Descripción':list(areas.values())}),hide_index=True,use_container_width=True)
+        st.info('Para dibujar flujos o calcular distancias SLP se necesita una matriz From–To y distancias por recorrido. El Checkpoint 08 no incluye geometría de rutas verificadas.')
+    with coltrend:
+        st.subheader('Productividad equivalente mensual · AS IS')
+        monthly_view = monthly.copy()
+        monthly_view['Periodo'] = monthly_view['Periodo'].astype(str)
+        monthly_view['TE/HH'] = monthly_view['Tanques equivalentes']/monthly_view['HH totales']
+        fig = px.line(monthly_view,x='Periodo',y='TE/HH',markers=True,
+                      labels={'Periodo':'Período','TE/HH':'Tanques equivalentes / HH'})
+        fig.update_traces(line_color='#37678a')
+        fig.update_layout(height=280,margin=dict(l=10,r=10,t=10,b=30))
+        st.plotly_chart(fig,use_container_width=True)
+        st.subheader('Alertas de condición · IoT simulado')
+        eq = data['MONITOREO_EQUIPOS'].copy()
+        st.dataframe(eq[['ID equipo','Alertas_advertencia','Alertas_criticas','Prioridad de revisión']],
+                     hide_index=True,use_container_width=True)
+        st.caption('Las alertas son simulaciones por umbrales; no son fallas reales ni datos de sensores instalados.')
+
+elif menu == 'AS IS vs TO BE':
     st.subheader('Simulador de productividad AS IS vs TO BE')
     st.write('Ajusta la reducción **hipotética** de las pérdidas de cada herramienta. Las HH liberadas se calculan únicamente sobre las pérdidas atribuidas a cada grupo.')
     col1, col2, col3 = st.columns(3)
