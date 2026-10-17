@@ -283,7 +283,39 @@ if page=="Indicadores integrales":
     c2.metric("Eventos de pérdida",len(t["05_PERDIDAS"]))
     c3.metric("Cuello de botella",str(bottleneck))
     c4.metric("Equipos en alerta (última lectura)",int(iot.sort_values("Periodo").groupby("Equipo").tail(1)["Nivel"].isin(["CRÍTICA","ADVERTENCIA"]).sum()))
-    tab1,tab2,tab3=st.tabs(["Producción y productividad","Pérdidas y capacidad","Alertas y decisiones"])
+    tab0,tab1,tab2,tab3=st.tabs(["AS IS vs. TO BE","Producción y productividad","Pérdidas y capacidad","Alertas y decisiones"])
+    with tab0:
+        st.markdown("### Comparativo de productividad y capacidad · AS IS → TO BE")
+        st.caption("Escenario moderado de referencia: 5S 35%, SLP 35%, TPM 40% y OTROS 10%. Las reducciones son supuestos modelados, no resultados observados.")
+        integrated_reductions={"5S":.35,"SLP":.35,"TPM":.40,"OTROS":.10}
+        integrated_sim=simulate(k,t,integrated_reductions,.75,"Moderado")
+        x1,x2,x3,x4=st.columns(4)
+        x1.metric("Productividad AS IS",f"{k['p']:.5f} TE/HH")
+        x2.metric("Productividad TO BE",f"{integrated_sim['new_te']/k['hh']:.5f} TE/HH",f"+{integrated_sim['gain']:.2%}")
+        x3.metric("Producción AS IS",f"{k['te']:.1f} TE")
+        x4.metric("Producción TO BE",f"{integrated_sim['new_te']:.1f} TE",f"+{integrated_sim['extra']:.1f} TE")
+        y1,y2,y3=st.columns(3)
+        y1.metric("HH trabajadas (mismo recurso)",f"{k['hh']:,.1f} HH")
+        y2.metric("HH potencialmente recuperadas",f"{integrated_sim['freed']:,.1f} HH")
+        y3.metric("Meta de productividad",f"+{meta:.0%}")
+        left_compare,right_compare=st.columns(2)
+        with left_compare:
+            comparison=pd.DataFrame({"Escenario":["AS IS","TO BE modelado","Meta 10%"],"Producción TE":[k['te'],integrated_sim['new_te'],k['te']*(1+meta)]})
+            fig=px.bar(comparison,x="Escenario",y="Producción TE",color="Escenario",text="Producción TE",title="Producción equivalente: actual, proyectada y objetivo",color_discrete_sequence=[BLUE,TEAL,ORANGE])
+            fig.update_traces(texttemplate="%{text:.1f}",textposition="outside")
+            fig.update_layout(showlegend=False,height=350,margin=dict(l=10,r=10,t=55,b=10),yaxis_range=[0,max(comparison['Producción TE'])*1.18])
+            st.plotly_chart(fig,use_container_width=True)
+        with right_compare:
+            prod_compare=pd.DataFrame({"Escenario":["AS IS","TO BE modelado","Meta 10%"],"Productividad TE/HH":[k['p'],integrated_sim['new_te']/k['hh'],k['p']*(1+meta)]})
+            fig=px.bar(prod_compare,x="Escenario",y="Productividad TE/HH",color="Escenario",text="Productividad TE/HH",title="Productividad: AS IS frente a TO BE",color_discrete_sequence=[BLUE,TEAL,ORANGE])
+            fig.update_traces(texttemplate="%{text:.5f}",textposition="outside")
+            fig.update_layout(showlegend=False,height=350,margin=dict(l=10,r=10,t=55,b=10),yaxis_range=[0,max(prod_compare['Productividad TE/HH'])*1.18])
+            st.plotly_chart(fig,use_container_width=True)
+        if integrated_sim['gain'] < meta:
+            st.warning(f"A10 · Escenario moderado: mejora proyectada {integrated_sim['gain']:.2%}; aún faltan {max(0,k['te']*meta-integrated_sim['extra']):.2f} TE para alcanzar la meta del {meta:.0%}. Revisa el simulador para cambiar los supuestos.")
+        else:
+            st.success("La meta se alcanza matemáticamente en este escenario modelado; requiere validación de demanda, capacidad y tiempos en planta.")
+        st.caption("Criterio: se mantienen las HH trabajadas y se convierte una parte de las HH liberadas en TE adicionales, limitada por la capacidad del cuello de botella. No sumar además una reducción de HH al denominador: duplicaría el beneficio.")
     with tab1:
         left,right=st.columns([1.6,1])
         with left:
