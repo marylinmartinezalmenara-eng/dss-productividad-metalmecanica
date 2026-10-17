@@ -276,8 +276,8 @@ if page=="Indicadores integrales":
     iot,source=get_iot(t)
     cap=capacity(t,"Moderado")
     bottleneck=cap.loc[cap["Capacidad base TE/6m"].idxmin(),"Proceso"]
-    cols=st.columns(5)
-    for col,(label,value) in zip(cols,[("Productividad",f"{k['p']:.5f} TE/HH"),("Producción",f"{k['te']:.1f} TE"),("HH trabajadas",nice(k['hh'],0)),("Pérdidas",f"{k['lost']/k['hh']:.1%}"),("Meta",f"+{meta:.0%}")]):col.metric(label,value)
+    cols=st.columns(6)
+    for col,(label,value) in zip(cols,[("Productividad física",f"{k['physical']/k['hh']:.5f} tanques/HH"),("Productividad",f"{k['p']:.5f} TE/HH"),("Producción",f"{k['te']:.1f} TE"),("HH trabajadas",nice(k['hh'],0)),("Pérdidas",f"{k['lost']/k['hh']:.1%}"),("Meta",f"+{meta:.0%}")]):col.metric(label,value)
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Órdenes",len(t["03_ORDENES"]))
     c2.metric("Eventos de pérdida",len(t["05_PERDIDAS"]))
@@ -294,6 +294,14 @@ if page=="Indicadores integrales":
         x2.metric("Productividad TO BE",f"{integrated_sim['new_te']/k['hh']:.5f} TE/HH",f"+{integrated_sim['gain']:.2%}")
         x3.metric("Producción AS IS",f"{k['te']:.1f} TE")
         x4.metric("Producción TO BE",f"{integrated_sim['new_te']:.1f} TE",f"+{integrated_sim['extra']:.1f} TE")
+        st.markdown("#### Productividad física · tanques/HH")
+        fis1,fis2,fis3=st.columns(3)
+        fis1.metric("AS IS · tanques/HH",f"{k['physical']/k['hh']:.5f}")
+        # Para estimar unidades físicas adicionales se mantiene la mezcla histórica de tamaños.
+        physical_to_be=k['physical']*(integrated_sim['new_te']/k['te'])
+        fis2.metric("TO BE · tanques/HH",f"{physical_to_be/k['hh']:.5f}",f"+{integrated_sim['gain']:.2%}")
+        fis3.metric("Tanques adicionales equivalentes en mezcla",f"+{physical_to_be-k['physical']:.2f}")
+        st.caption("Tanques TO BE estimados manteniendo la mezcla de productos actual. Es una equivalencia modelada, no unidades enteras comprometidas de fabricación.")
         y1,y2,y3=st.columns(3)
         y1.metric("HH trabajadas (mismo recurso)",f"{k['hh']:,.1f} HH")
         y2.metric("HH potencialmente recuperadas",f"{integrated_sim['freed']:,.1f} HH")
@@ -311,6 +319,11 @@ if page=="Indicadores integrales":
             fig.update_traces(texttemplate="%{text:.5f}",textposition="outside")
             fig.update_layout(showlegend=False,height=350,margin=dict(l=10,r=10,t=55,b=10),yaxis_range=[0,max(prod_compare['Productividad TE/HH'])*1.18])
             st.plotly_chart(fig,use_container_width=True)
+        physical_compare=pd.DataFrame({"Escenario":["AS IS","TO BE modelado","Meta"],"Tanques/HH":[k['physical']/k['hh'],physical_to_be/k['hh'],k['physical']/k['hh']*(1+meta)]})
+        fig=px.bar(physical_compare,x="Escenario",y="Tanques/HH",color="Escenario",text="Tanques/HH",title="Productividad física · tanques/HH",color_discrete_sequence=[BLUE,TEAL,ORANGE])
+        fig.update_traces(texttemplate="%{text:.5f}",textposition="outside")
+        fig.update_layout(showlegend=False,height=300,margin=dict(l=10,r=10,t=55,b=10),yaxis_range=[0,physical_compare['Tanques/HH'].max()*1.2])
+        st.plotly_chart(fig,use_container_width=True)
         if integrated_sim['gain'] < meta:
             st.warning(f"A10 · Escenario moderado: mejora proyectada {integrated_sim['gain']:.2%}; aún faltan {max(0,k['te']*meta-integrated_sim['extra']):.2f} TE para alcanzar la meta del {meta:.0%}. Revisa el simulador para cambiar los supuestos.")
         else:
@@ -455,6 +468,12 @@ elif page=="Simulador de mejora":
     b.metric("TE adicionales factibles en modelo",nice(sim["extra"],2))
     c.metric("Productividad TO BE",f"{sim['new_te']/k['hh']:.5f} TE/HH")
     d.metric("Mejora proyectada",f"{sim['gain']:.2%}")
+    physical_to_be=k['physical']*sim['new_te']/k['te']
+    ph1,ph2,ph3=st.columns(3)
+    ph1.metric("Productividad física AS IS",f"{k['physical']/k['hh']:.5f} tanques/HH")
+    ph2.metric("Productividad física TO BE",f"{physical_to_be/k['hh']:.5f} tanques/HH",f"+{sim['gain']:.2%}")
+    ph3.metric("Producción física estimada TO BE",f"{physical_to_be:.2f} tanques")
+    st.caption("La estimación física conserva la mezcla de tanques del período. La producción real debe expresarse en unidades enteras y verificarse por tipo de tanque.")
     progress=min(1,sim["gain"]/meta) if meta else 1
     st.progress(progress,text=f"Avance de la simulación hacia meta {meta:.0%}: {progress:.0%}")
     if sim["gain"]+1e-9<meta:
@@ -475,7 +494,7 @@ elif page=="Simulador de mejora":
         fig.update_layout(showlegend=False,height=320,margin=dict(l=10,r=10,t=50,b=10))
         st.plotly_chart(fig,use_container_width=True)
     st.caption("Modelo: TE extra = mínimo(HH recuperadas × conversión × productividad AS IS, holgura del cuello de botella y demanda cuando se activa). No es una medición ni una predicción validada.")
-    export=pd.DataFrame([{"Escenario":mode,"TE_AS_IS":k["te"],"HH_AS_IS":k["hh"],"HH_liberadas_hipoteticas":sim["freed"],"TE_extra_simuladas":sim["extra"],"TE_TO_BE":sim["new_te"],"Mejora_proyectada":sim["gain"],"Meta":meta,"Estado":"SIMULADO_NO_VALIDADO"}])
+    export=pd.DataFrame([{"Escenario":mode,"TE_AS_IS":k["te"],"HH_AS_IS":k["hh"],"HH_liberadas_hipoteticas":sim["freed"],"TE_extra_simuladas":sim["extra"],"TE_TO_BE":sim["new_te"],"Tanques_AS_IS":k["physical"],"Tanques_TO_BE_modelados":physical_to_be,"Tanques_por_HH_AS_IS":k["physical"]/k["hh"],"Tanques_por_HH_TO_BE":physical_to_be/k["hh"],"Mejora_proyectada":sim["gain"],"Meta":meta,"Estado":"SIMULADO_NO_VALIDADO"}])
     st.download_button("Descargar resultado del escenario",export.to_csv(index=False).encode("utf-8-sig"),file_name="escenario_dss_v4.csv",mime="text/csv")
 
 elif page=="SLP y recorridos":
