@@ -176,10 +176,70 @@ def simulate(k,t,reductions,conversion,mode,extra_demand=None):
     new_te=k["te"]+extra
     return {"freed":freed,"usable":usable,"extra":extra,"new_te":new_te,"gain":new_te/k["te"]-1,"cap":cap,"bottleneck":bottleneck,"hh_cap":te_hh,"slack":slack}
 
+
+
+def monthly_kpis(t):
+    hh=t["02_ASISTENCIA"].groupby("Periodo")["HH trabajadas"].sum().rename("HH")
+    te=t["03_ORDENES"].groupby("Periodo")["Producción TE"].sum().rename("TE")
+    ev=t["05_PERDIDAS"].groupby("Periodo")["HH perdidas"].sum().rename("HH pérdidas")
+    d=pd.concat([te,hh,ev],axis=1).fillna(0).reset_index().sort_values("Periodo")
+    d["Productividad"]=d["TE"]/d["HH"].replace(0,np.nan)
+    d["% pérdidas"]=d["HH pérdidas"]/d["HH"].replace(0,np.nan)
+    return d
+
+def demo_iot(t):
+    # Datos deterministas de DEMOSTRACIÓN: nunca se atribuyen a sensores reales.
+    eq=t.get("06_EQUIPOS",pd.DataFrame())
+    names=sorted(eq["Equipo"].dropna().astype(str).unique()) if "Equipo" in eq else []
+    if not names:names=[f"MAQ-{i:02d}" for i in range(1,5)]
+    periods=sorted(t["03_ORDENES"]["Periodo"].dropna().astype(str).unique())
+    if not periods:periods=["Muestra"]
+    data=[]
+    for i,name in enumerate(names):
+        for j,period in enumerate(periods):
+            # Curvas repetibles para comprobar alertas y filtros del prototipo.
+            temp=round(51+3*i+2*j+ (13 if i==2 and j>=3 else 0),1)
+            vib=round(2.1+.45*i+.24*j+(2.5 if i==2 and j>=3 else 0),2)
+            level="CRÍTICA" if temp>=85 or vib>=7.1 else "ADVERTENCIA" if temp>=70 or vib>=4.5 else "NORMAL"
+            data.append({"Periodo":period,"Equipo":name,"Temperatura °C":temp,"Vibración mm/s":vib,"Nivel":level,"Fuente":"SIMULADO"})
+    return pd.DataFrame(data)
+
+def get_iot(t):
+    if "18_IOT_LECTURAS" not in t:return demo_iot(t),"SIMULADO"
+    f=t["18_IOT_LECTURAS"].copy()
+    required={"Periodo","Equipo","Temperatura °C","Vibración mm/s"}
+    if not required.issubset(f.columns):
+        st.warning("A-IOT01 · La hoja 18_IOT_LECTURAS no tiene columnas correctas; se muestra demostración simulada.")
+        return demo_iot(t),"SIMULADO"
+    for c in ["Temperatura °C","Vibración mm/s"]:f[c]=pd.to_numeric(f[c],errors="coerce")
+    if f[["Temperatura °C","Vibración mm/s"]].isna().any().any():
+        st.error("E-IOT02 · Existen lecturas IoT vacías o no numéricas. Se muestran datos de demostración para no ocultar el problema.")
+        return demo_iot(t),"SIMULADO"
+    if ((f["Temperatura °C"]< -20)|(f["Temperatura °C"]>200)|(f["Vibración mm/s"]<0)|(f["Vibración mm/s"]>50)).any():
+        st.error("E-IOT03 · Lecturas fuera del rango permitido. Revisa temperatura y vibración.")
+        return demo_iot(t),"SIMULADO"
+    f["Nivel"]=np.select([(f["Temperatura °C"]>=85)|(f["Vibración mm/s"]>=7.1),(f["Temperatura °C"]>=70)|(f["Vibración mm/s"]>=4.5)],["CRÍTICA","ADVERTENCIA"],default="NORMAL")
+    f["Fuente"]="ARCHIVO CARGADO · VERIFICAR ORIGEN"
+    return f,"ARCHIVO"
+
+def demo_followup(k,t,meta):
+    # Proyección progresiva de adopción, NO resultados observados.
+    presets=[("Línea base",0,0,0), ("5S",.18,0,0), ("5S + SLP",.28,.24,0), ("5S + SLP + TPM",.32,.30,.28),("Estabilización",.42,.40,.38)]
+    rows=[]
+    for phase,a,b,c in presets:
+        freed=k["losses"].get("5S",0)*a+k["losses"].get("SLP",0)*b+k["losses"].get("TPM",0)*c
+        usable=freed*.75
+        # El escenario demuestra el efecto de HH liberadas en eficiencia,
+        # sin asumir producción adicional sin capacidad/demanda demostradas.
+        hh_effective=max(1,k["hh"]-usable)
+        prod=k["te"]/hh_effective
+        rows.append({"Etapa":phase,"HH recuperadas hipotéticas":round(usable,2),"TE":k["te"],"HH equivalentes":round(hh_effective,2),"Productividad TE/HH":prod,"Mejora %":prod/k["p"]-1,"Tipo":"PROYECCIÓN MODELADA"})
+    return pd.DataFrame(rows)
+
 with st.sidebar:
     st.markdown("## 🏭 DSS INDUSTRIAL")
     st.caption("DECISION SUPPORT SYSTEM · V4")
-    page=st.radio("Navegación",["Resumen ejecutivo","Productividad y pérdidas","Capacidad y procesos","Simulador de mejora","SLP y recorridos","TPM e IoT","Recomendaciones","Calidad de datos","Seguimiento"],label_visibility="collapsed")
+    page=st.radio("Navegación",["Indicadores integrales","Resumen ejecutivo","Productividad y pérdidas","Capacidad y procesos","Simulador de mejora","SLP y recorridos","TPM e IoT","Recomendaciones","Calidad de datos","Seguimiento"],label_visibility="collapsed")
     st.divider()
     uploaded=st.file_uploader("Cargar Excel final V4",type=["xlsx"],help="Solo DSS_FINAL_PARA_STREAMLIT_V4.xlsx. Otros archivos se validan y rechazan si no tienen la estructura requerida.")
     st.caption("Los datos cargados se procesan en la sesión. Evita subir información confidencial sin autorización.")
@@ -208,6 +268,64 @@ if not 0<=meta<=1:
     st.error("E18 · La meta de productividad en 00_PARAMETROS debe estar entre 0 y 1.");st.stop()
 if len(warns):st.warning(f"**{len(warns)} advertencias de calidad de datos.** Consulta «Calidad de datos» para ver cómo corregirlas.")
 st.caption(f"Base cargada: {uploaded.name} · {len(t)} hojas · {len(t['03_ORDENES'])} órdenes · {len(t['05_PERDIDAS'])} eventos · **datos modelados, no observaciones verificadas**")
+
+if page=="Indicadores integrales":
+    st.subheader("Centro de control · Indicadores integrales")
+    st.caption("Vista consolidada del DSS | Línea base modelada, capacidad, pérdidas, alertas y oportunidades")
+    monthly=monthly_kpis(t)
+    iot,source=get_iot(t)
+    cap=capacity(t,"Moderado")
+    bottleneck=cap.loc[cap["Capacidad base TE/6m"].idxmin(),"Proceso"]
+    cols=st.columns(5)
+    for col,(label,value) in zip(cols,[("Productividad",f"{k['p']:.5f} TE/HH"),("Producción",f"{k['te']:.1f} TE"),("HH trabajadas",nice(k['hh'],0)),("Pérdidas",f"{k['lost']/k['hh']:.1%}"),("Meta",f"+{meta:.0%}")]):col.metric(label,value)
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("Órdenes",len(t["03_ORDENES"]))
+    c2.metric("Eventos de pérdida",len(t["05_PERDIDAS"]))
+    c3.metric("Cuello de botella",str(bottleneck))
+    c4.metric("Equipos en alerta (última lectura)",int(iot.sort_values("Periodo").groupby("Equipo").tail(1)["Nivel"].isin(["CRÍTICA","ADVERTENCIA"]).sum()))
+    tab1,tab2,tab3=st.tabs(["Producción y productividad","Pérdidas y capacidad","Alertas y decisiones"])
+    with tab1:
+        left,right=st.columns([1.6,1])
+        with left:
+            fig=px.line(monthly,x="Periodo",y="Productividad",markers=True,title="Productividad mensual · TE/HH",color_discrete_sequence=[TEAL])
+            fig.add_hline(y=k["p"]*(1+meta),line_dash="dash",annotation_text="Meta",line_color=ORANGE)
+            fig.update_layout(height=330,margin=dict(l=10,r=10,t=50,b=10),yaxis_tickformat=".5f")
+            st.plotly_chart(fig,use_container_width=True)
+        with right:
+            fig=px.bar(monthly,x="Periodo",y="TE",title="Producción equivalente por mes",color_discrete_sequence=[BLUE])
+            fig.update_layout(height=330,margin=dict(l=10,r=10,t=50,b=10))
+            st.plotly_chart(fig,use_container_width=True)
+        st.dataframe(monthly.style.format({"HH":"{:,.1f}","TE":"{:,.1f}","Productividad":"{:.5f}","HH pérdidas":"{:,.1f}","% pérdidas":"{:.1%}"}),use_container_width=True,hide_index=True)
+    with tab2:
+        l,r=st.columns(2)
+        with l:
+            e=t["05_PERDIDAS"].groupby("Herramienta",as_index=False)["HH perdidas"].sum().sort_values("HH perdidas")
+            fig=px.bar(e,x="HH perdidas",y="Herramienta",orientation="h",title="Pérdidas por herramienta (HH)",color="Herramienta",color_discrete_sequence=PALETTE)
+            fig.update_layout(height=350,showlegend=False,margin=dict(l=10,r=10,t=50,b=10))
+            st.plotly_chart(fig,use_container_width=True)
+        with r:
+            fig=px.bar(cap,x="Proceso",y="Capacidad base TE/6m",title="Capacidad modelada por proceso",color="Proceso",color_discrete_sequence=PALETTE)
+            fig.add_hline(y=k["te"],line_dash="dash",annotation_text="Producción base")
+            fig.update_layout(height=350,showlegend=False,margin=dict(l=10,r=10,t=50,b=10))
+            st.plotly_chart(fig,use_container_width=True)
+        st.info(f"La capacidad mínima modelada corresponde a {bottleneck}. No representa capacidad verificada en planta.")
+    with tab3:
+        l,r=st.columns([1.1,1])
+        with l:
+            last=iot.sort_values("Periodo").groupby("Equipo").tail(1).sort_values("Equipo")
+            st.markdown("**Estado por máquina · Última lectura**")
+            st.dataframe(last[["Equipo","Periodo","Temperatura °C","Vibración mm/s","Nivel"]],hide_index=True,use_container_width=True)
+            st.caption(f"Origen IoT: {source}. Umbrales ilustrativos, no límites validados por fabricante.")
+        with r:
+            priority=t["05_PERDIDAS"].groupby(["Herramienta","Causa"],as_index=False)["HH perdidas"].sum().nlargest(4,"HH perdidas")
+            st.markdown("**Principales causas para actuar**")
+            st.dataframe(priority,hide_index=True,use_container_width=True)
+            if len(warns):st.warning(f"Hay {len(warns)} advertencias de calidad de datos. Consulta Calidad de datos.")
+    with st.expander("Plano de planta · Distribución actual"):
+        img=Path(__file__).with_name("layout_actual.png")
+        if img.exists():st.image(str(img),use_container_width=True)
+        else:st.warning("A13 · Falta layout_actual.png en el repositorio.")
+    st.caption("Todas las cifras provienen del Excel cargado, salvo el panel IoT cuando se identifica como SIMULADO.")
 
 if page=="Resumen ejecutivo":
     st.subheader("Visión ejecutiva · Línea base AS IS")
@@ -342,25 +460,47 @@ elif page=="SLP y recorridos":
     st.warning("Los recorridos From-To son hipotéticos. No deben dibujarse como rutas verificadas ni sumarse a las HH de eventos SLP sin conciliación.")
 
 elif page=="TPM e IoT":
-    st.subheader("TPM · Mantenimiento y monitoreo")
-    eq=t.get("06_EQUIPOS",pd.DataFrame())
-    if len(eq):
-        n_measured=int(eq["Horas parada"].notna().sum())
-        a,b=st.columns(2)
-        a.metric("Registros de equipos",len(eq));b.metric("Registros con parada medida",n_measured)
-        st.dataframe(eq,use_container_width=True,hide_index=True)
-        if not n_measured:st.warning("A14 · No se pueden calcular MTBF ni MTTR reales: faltan fallas, horas operativas y tiempos de reparación medidos.")
-    st.markdown("#### Panel de alertas IoT · Demostración")
-    st.info("La planta no tiene sensores IoT instalados. Este panel permite ensayar reglas con lecturas introducidas manualmente; no representa monitoreo en tiempo real.")
+    st.subheader("Monitoreo TPM · Alertas por máquina")
+    iot,source=get_iot(t)
+    st.info(f"Origen de las lecturas: **{source}**. Si dice SIMULADO, son ejemplos reproducibles para probar el DSS; la planta no cuenta con sensores conectados.")
+    last=iot.sort_values("Periodo").groupby("Equipo").tail(1).sort_values("Equipo")
+    a,b,c,d=st.columns(4)
+    a.metric("Máquinas",len(last))
+    b.metric("Críticas",int((last["Nivel"]=="CRÍTICA").sum()))
+    c.metric("En advertencia",int((last["Nivel"]=="ADVERTENCIA").sum()))
+    d.metric("Sin alerta",int((last["Nivel"]=="NORMAL").sum()))
+    for _,r in last.iterrows():
+        msg=f"{r['Equipo']} · {r['Temperatura °C']:.1f} °C · {r['Vibración mm/s']:.2f} mm/s · {r['Periodo']}"
+        if r["Nivel"]=="CRÍTICA":st.error("🔴 CRÍTICA · "+msg+" · Revisar condición con mantenimiento.")
+        elif r["Nivel"]=="ADVERTENCIA":st.warning("🟠 ADVERTENCIA · "+msg+" · Programar inspección.")
+        else:st.success("🟢 NORMAL · "+msg)
+    equipment=st.selectbox("Consultar historial de una máquina",last["Equipo"].tolist())
+    history=iot.loc[iot["Equipo"]==equipment].sort_values("Periodo")
+    left,right=st.columns(2)
+    with left:
+        fig=px.line(history,x="Periodo",y="Temperatura °C",markers=True,title=f"{equipment} · Temperatura",color_discrete_sequence=[ORANGE])
+        fig.add_hline(y=70,line_dash="dash",line_color=ORANGE,annotation_text="Advertencia")
+        fig.add_hline(y=85,line_dash="dash",line_color=RED,annotation_text="Crítica")
+        fig.update_layout(height=310,margin=dict(l=10,r=10,t=50,b=10));st.plotly_chart(fig,use_container_width=True)
+    with right:
+        fig=px.line(history,x="Periodo",y="Vibración mm/s",markers=True,title=f"{equipment} · Vibración",color_discrete_sequence=[BLUE])
+        fig.add_hline(y=4.5,line_dash="dash",line_color=ORANGE,annotation_text="Advertencia")
+        fig.add_hline(y=7.1,line_dash="dash",line_color=RED,annotation_text="Crítica")
+        fig.update_layout(height=310,margin=dict(l=10,r=10,t=50,b=10));st.plotly_chart(fig,use_container_width=True)
+    st.dataframe(iot,use_container_width=True,hide_index=True)
+    st.download_button("Descargar lecturas y alertas",iot.to_csv(index=False).encode("utf-8-sig"),"alertas_iot_dss.csv","text/csv")
+    st.markdown("#### Prueba manual de alertas")
     with st.container(border=True):
         col1,col2,col3=st.columns(3)
-        equip=col1.selectbox("Equipo",sorted(eq["Equipo"].dropna().astype(str).unique()) if len(eq) else ["MAQ-01"])
-        temp=col2.number_input("Temperatura de prueba (°C)",min_value=-20.0,max_value=200.0,value=55.0)
-        vibration=col3.number_input("Vibración de prueba (mm/s)",min_value=0.0,max_value=50.0,value=2.5,step=.1)
-        if temp>=85 or vibration>=7.1:st.error(f"ALERTA CRÍTICA SIMULADA · {equip}: detener evaluación y solicitar inspección técnica según procedimiento interno.")
-        elif temp>=70 or vibration>=4.5:st.warning(f"ADVERTENCIA SIMULADA · {equip}: programar inspección y revisar condición del equipo.")
-        else:st.success(f"SIN ALERTA SIMULADA · {equip}: lectura dentro de umbrales de demostración.")
-        st.caption("Umbrales ilustrativos; no sustituyen los límites del fabricante, normas técnicas ni una evaluación de seguridad.")
+        machine=col1.selectbox("Máquina de prueba",last["Equipo"].tolist(),key="iot_test_machine")
+        temp=col2.number_input("Temperatura °C",min_value=-20.,max_value=200.,value=55.,step=1.)
+        vibration=col3.number_input("Vibración mm/s",min_value=0.,max_value=50.,value=2.5,step=.1)
+        if temp>=85 or vibration>=7.1:st.error(f"CRÍTICA SIMULADA · {machine}: inspección prioritaria.")
+        elif temp>=70 or vibration>=4.5:st.warning(f"ADVERTENCIA SIMULADA · {machine}: inspección programada.")
+        else:st.success(f"NORMAL SIMULADO · {machine}")
+    eq=t.get("06_EQUIPOS",pd.DataFrame())
+    if len(eq) and eq["Horas parada"].notna().sum()==0:st.warning("A14 · MTBF y MTTR reales no calculables: faltan paradas y reparaciones medidas.")
+    st.caption("Los umbrales de 70/85 °C y 4.5/7.1 mm/s son demostrativos; requieren especificaciones técnicas y validación por equipo.")
 
 elif page=="Recomendaciones":
     st.subheader("Motor de recomendaciones DSS")
@@ -385,19 +525,35 @@ elif page=="Calidad de datos":
     st.warning("Una validación informática comprueba estructura y consistencia, no certifica que los datos modelados sean reales.")
 
 elif page=="Seguimiento":
-    st.subheader("Seguimiento de mejora continua · Resultados observados")
-    f=t.get("12_SEGUIMIENTO",pd.DataFrame()).copy()
-    if len(f):
-        f["TE observados"]=pd.to_numeric(f["TE observados"],errors="coerce")
-        f["HH observadas"]=pd.to_numeric(f["HH observadas"],errors="coerce")
-        f["Productividad calculada"]=np.where(f["HH observadas"]>0,f["TE observados"]/f["HH observadas"],np.nan)
-        f["Cambio vs AS IS"]=f["Productividad calculada"]/k["p"]-1
-        st.dataframe(f,use_container_width=True,hide_index=True)
-        measured=f.dropna(subset=["Productividad calculada"])
-        if measured.empty:st.info("A15 · Todavía no hay resultados posteriores medidos. Completa 12_SEGUIMIENTO con TE, HH, fecha y evidencia de cada intervención.")
-        else:
-            fig=px.line(measured,x="Fase",y="Cambio vs AS IS",markers=True,title="Mejora observada vs. línea base")
-            fig.add_hline(y=meta,line_dash="dash",annotation_text=f"Meta {meta:.0%}")
-            fig.update_layout(yaxis_tickformat=".1%",height=350)
-            st.plotly_chart(fig,use_container_width=True)
-    st.caption("Una mejora continua demostrada exige datos de seguimiento reales, comparables y documentados.")
+    st.subheader("Seguimiento · Mejora continua")
+    st.caption("Dos vistas separadas: proyección académica ilustrativa y resultados observados cargados en Excel.")
+    view=st.radio("Tipo de seguimiento",["Proyección de demostración","Resultados observados"],horizontal=True)
+    if view=="Proyección de demostración":
+        st.warning("**SERIE SIMULADA.** Los valores representan hipótesis progresivas de adopción 5S, SLP y TPM; no son resultados de implementación real.")
+        f=demo_followup(k,t,meta)
+        a,b,c=st.columns(3)
+        a.metric("Productividad base",f"{k['p']:.5f} TE/HH")
+        b.metric("Mejora final modelada",f"{f['Mejora %'].iloc[-1]:.2%}")
+        c.metric("Meta de investigación",f"{meta:.0%}")
+        fig=px.line(f,x="Etapa",y="Mejora %",markers=True,title="Trayectoria hipotética de mejora",color_discrete_sequence=[TEAL])
+        fig.add_hline(y=meta,line_dash="dash",line_color=ORANGE,annotation_text=f"Meta {meta:.0%}")
+        fig.update_layout(yaxis_tickformat=".1%",height=390,margin=dict(l=10,r=10,t=50,b=10))
+        st.plotly_chart(fig,use_container_width=True)
+        st.dataframe(f.style.format({"HH recuperadas hipotéticas":"{:,.1f}","TE":"{:,.1f}","HH equivalentes":"{:,.1f}","Productividad TE/HH":"{:.5f}","Mejora %":"{:.2%}"}),use_container_width=True,hide_index=True)
+        st.download_button("Descargar proyección (SIMULADA)",f.to_csv(index=False).encode("utf-8-sig"),"seguimiento_simulado.csv","text/csv")
+        st.info("Este modelo muestra productividad equivalente con HH netas tras mejoras. No debe sumarse a producción adicional en otro escenario: se debe elegir un criterio de productividad y conciliar la capacidad.")
+    else:
+        f=t.get("12_SEGUIMIENTO",pd.DataFrame()).copy()
+        if len(f):
+            for col in ["TE observados","HH observadas"]:f[col]=pd.to_numeric(f[col],errors="coerce")
+            f["Productividad calculada"]=np.where(f["HH observadas"]>0,f["TE observados"]/f["HH observadas"],np.nan)
+            f["Cambio vs AS IS"]=f["Productividad calculada"]/k["p"]-1
+            st.dataframe(f,use_container_width=True,hide_index=True)
+            measured=f.dropna(subset=["Productividad calculada"])
+            if measured.empty:st.info("A15 · No hay mediciones posteriores registradas. Completa 12_SEGUIMIENTO para mostrar resultados reales.")
+            else:
+                fig=px.line(measured,x="Fase",y="Cambio vs AS IS",markers=True,title="Mejora observada")
+                fig.add_hline(y=meta,line_dash="dash",annotation_text=f"Meta {meta:.0%}")
+                fig.update_layout(yaxis_tickformat=".1%",height=350)
+                st.plotly_chart(fig,use_container_width=True)
+        else:st.warning("A16 · No existe la hoja 12_SEGUIMIENTO.")
