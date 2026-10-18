@@ -413,6 +413,11 @@ if page=="Resumen ejecutivo":
         with st.expander("Ver plano actual de la planta"):
             st.image(str(layout),caption="Plano de referencia. Las rutas simuladas no equivalen a recorridos medidos.",use_container_width=True)
 
+    st.markdown("#### Recomendaciones prioritarias · Vista rápida")
+    quick=t["05_PERDIDAS"].groupby(["Herramienta","Causa"],as_index=False)["HH perdidas"].sum().sort_values("HH perdidas",ascending=False).head(3)
+    st.dataframe(quick.rename(columns={"Causa":"Problema"}),use_container_width=True,hide_index=True)
+    st.caption("Para consultar acciones, responsables, KPI y puntuación, entra a «Recomendaciones» en el menú lateral.")
+
 elif page=="Productividad y pérdidas":
     st.subheader("Diagnóstico de pérdidas operativas")
     e=t["05_PERDIDAS"].copy()
@@ -554,15 +559,64 @@ elif page=="TPM e IoT":
     st.caption("Los umbrales de 70/85 °C y 4.5/7.1 mm/s son demostrativos; requieren especificaciones técnicas y validación por equipo.")
 
 elif page=="Recomendaciones":
-    st.subheader("Motor de recomendaciones DSS")
-    e=t["05_PERDIDAS"]
-    priorities=e.groupby(["Herramienta","Causa"],as_index=False)["HH perdidas"].sum().sort_values("HH perdidas",ascending=False)
-    actions={"5S":"Organizar herramientas, aplicar control visual y auditar tiempos de búsqueda.","SLP":"Medir From-To y rediseñar recorridos según relaciones entre áreas.","TPM":"Registrar fallas, priorizar equipos críticos y programar mantenimiento.","OTROS":"Estudiar esperas, preparación y retrabajos antes de asignar una herramienta."}
-    priorities["Acción recomendada"]=priorities["Herramienta"].astype(str).str.upper().map(actions).fillna("Investigar causa y proponer acción validable")
-    priorities.insert(0,"Prioridad",range(1,len(priorities)+1))
-    priorities["Participación"]=(priorities["HH perdidas"]/k["lost"]*100).round(1)
-    st.dataframe(priorities,use_container_width=True,hide_index=True)
-    st.caption("Prioridad preliminar por HH modeladas; no sustituye factibilidad, costo ni juicio experto.")
+    st.subheader("Reglas de decisión 5S · SLP · TPM")
+    st.caption("Recomendaciones trazables basadas en las pérdidas de la base V4. Puntuaciones orientativas; requieren validación experta.")
+    e=t["05_PERDIDAS"].copy()
+    e["Herramienta"]=e["Herramienta"].astype(str).str.upper().str.strip()
+    e["Causa"]=e["Causa"].astype(str).str.strip()
+    reco=e.groupby(["Herramienta","Causa"],as_index=False).agg(
+        **{"HH perdidas":("HH perdidas","sum"),"Eventos":("Evento","count")}
+    )
+    catalog={
+        "avería mecánica":("Implementar inspecciones autónomas, mantenimiento preventivo y registro de fallas en equipos críticos.","Responsable de mantenimiento","MTBF, disponibilidad, HH perdidas por avería"),
+        "ajuste correctivo no planificado":("Estandarizar inspecciones, lubricación, calibración y ajustes preventivos.","Responsable de mantenimiento","MTTR, número de ajustes, cumplimiento preventivo"),
+        "traslado entre áreas":("Evaluar redistribución de planta mediante SLP, validando relaciones entre áreas y recorridos From-To.","Jefe de operaciones","Metros recorridos, tiempo de traslado, TE/HH"),
+        "búsqueda de herramientas":("Aplicar clasificación, ubicación visual, tableros de herramientas y auditorías 5S.","Supervisor de producción","Minutos de búsqueda, puntuación 5S"),
+        "espera de material":("Establecer coordinación entre almacén y producción, preparación anticipada de materiales.","Jefe de operaciones y almacén","Minutos de espera, cumplimiento de abastecimiento"),
+        "material fuera de ubicación":("Aplicar orden visual, identificación de materiales y ubicaciones fijas mediante 5S.","Supervisor de producción","Tiempo de búsqueda, auditoría 5S"),
+        "ruta congestionada":("Rediseñar rutas de circulación y separar flujos de personas y materiales mediante SLP.","Jefe de operaciones","Tiempo de recorrido, metros por orden"),
+    }
+    defaults={
+        "5S":("Implementar 5S y medir reducción de búsquedas y desorden.","Supervisor de producción","Minutos de búsqueda, auditoría 5S"),
+        "SLP":("Analizar recorridos From-To y evaluar un layout propuesto.","Jefe de operaciones","Metros recorridos, tiempo de traslado"),
+        "TPM":("Priorizar inspecciones y mantenimiento preventivo según criticidad.","Responsable de mantenimiento","MTBF, MTTR, disponibilidad"),
+        "OTROS":("Investigar y clasificar la causa antes de asignar una herramienta.","Jefe de operaciones","HH perdidas por causa"),
+    }
+    def recommendation(row):
+        return catalog.get(str(row["Causa"]).casefold(),defaults.get(row["Herramienta"],defaults["OTROS"]))
+    reco["Acción recomendada"]=reco.apply(lambda r:recommendation(r)[0],axis=1)
+    reco["Responsable"]=reco.apply(lambda r:recommendation(r)[1],axis=1)
+    reco["KPI"]=reco.apply(lambda r:recommendation(r)[2],axis=1)
+    # Puntuación transparente y reproducible: impacto HH 70% + frecuencia 30%.
+    # No equivale al puntaje de expertos del CP08, que usa otro conjunto de datos.
+    max_hh=max(float(reco["HH perdidas"].max()),1.0)
+    max_evt=max(int(reco["Eventos"].max()),1)
+    reco["Puntuación DSS"]=(70*reco["HH perdidas"]/max_hh+30*reco["Eventos"]/max_evt).round(2)
+    reco=reco.sort_values(["Puntuación DSS","HH perdidas"],ascending=False).reset_index(drop=True)
+    reco.insert(0,"Prioridad",range(1,len(reco)+1))
+    filtro=st.selectbox("Herramienta",["Todas","5S","SLP","TPM","OTROS"])
+    filtered=reco if filtro=="Todas" else reco[reco["Herramienta"]==filtro]
+    if filtered.empty:
+        st.info("No se encontraron causas para la herramienta seleccionada.")
+    else:
+        st.dataframe(filtered[["Prioridad","Causa","Herramienta","HH perdidas","Eventos","Puntuación DSS","Acción recomendada"]].rename(columns={"Causa":"Problema"}),use_container_width=True,hide_index=True,column_config={"Acción recomendada":st.column_config.TextColumn(width="large"),"HH perdidas":st.column_config.NumberColumn(format="%.2f"),"Puntuación DSS":st.column_config.NumberColumn(format="%.2f")})
+        selected=st.selectbox("Causa a consultar",filtered["Causa"].tolist())
+        detail=filtered[filtered["Causa"]==selected].iloc[0]
+        st.markdown(f"**Acción:** {detail['Acción recomendada']}")
+        st.markdown(f"**Responsable:** {detail['Responsable']}")
+        st.markdown(f"**KPI:** {detail['KPI']}")
+        c1,c2,c3=st.columns(3)
+        c1.metric("HH perdidas",f"{detail['HH perdidas']:,.2f}")
+        c2.metric("Eventos",int(detail["Eventos"]))
+        c3.metric("Puntuación DSS",f"{detail['Puntuación DSS']:.2f}/100")
+        if detail["Herramienta"]=="OTROS":
+            st.warning("A-R01 · Causa sin herramienta asignada. Revisar la clasificación antes de aplicar una acción.")
+        if detail["HH perdidas"]<=0:
+            st.error("E-R02 · La causa seleccionada no tiene HH perdidas positivas. Revisar el Excel.")
+        st.download_button("Exportar recomendaciones CSV",filtered.to_csv(index=False).encode("utf-8-sig"),file_name="recomendaciones_trazables_dss.csv",mime="text/csv")
+    with st.expander("Cómo se obtiene la puntuación y cómo validar la recomendación"):
+        st.write("Puntuación orientativa = 70 × (HH perdidas de la causa / máximo HH entre causas) + 30 × (número de eventos / máximo de eventos entre causas). No representa un puntaje experto validado ni el del Checkpoint 08.")
+        st.write("Las causas y HH proceden de 05_PERDIDAS del Excel cargado. Las acciones, responsables y KPI son reglas propuestas; requieren revisión por operaciones y mantenimiento. No se deben presentar como decisiones implementadas.")
 
 elif page=="Calidad de datos":
     st.subheader("Control de calidad y trazabilidad")
