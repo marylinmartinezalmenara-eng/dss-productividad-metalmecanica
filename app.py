@@ -5,8 +5,30 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title='DSS | Productividad metalmecánica',page_icon='🏭',layout='wide')
-st.markdown('''<style>.block-container{padding-top:1.5rem;max-width:1500px}h1,h2,h3{color:#193b56}div[data-testid="stMetric"]{background:#f2f6fa;padding:14px;border:1px solid #e0e8ef;border-radius:12px}.stAlert{border-radius:10px}</style>''',unsafe_allow_html=True)
+st.set_page_config(page_title="DSS | Productividad de mano de obra", page_icon="🏭", layout="wide", initial_sidebar_state="expanded")
+st.markdown("""
+<style>
+:root {--navy:#14263f;--blue:#245783;--ink:#18324c;--paper:#f5f7fb;}
+.stApp {background:#f5f7fb;}
+.block-container {max-width:1490px;padding-top:1.4rem;padding-bottom:3rem;}
+[data-testid="stSidebar"] {background:#14263f;}
+[data-testid="stSidebar"] * {color:#edf4fc;}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] {background:#f1f5fa;border-radius:11px;padding:9px;}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] * {color:#19354f!important;}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {font-size:.91rem;}
+[data-testid="stSidebar"] [data-testid="stSlider"] label {font-size:.85rem;}
+[data-testid="stSidebar"] hr {border-color:#53657b;}
+h1,h2,h3 {color:#193b56;letter-spacing:-.02em;}
+div[data-testid="stMetric"] {background:white;padding:17px 19px;border:1px solid #e0e7ef;border-radius:14px;box-shadow:0 3px 12px rgba(24,50,76,.035);}
+[data-testid="stMetricLabel"] {color:#49627c;}
+[data-testid="stMetricValue"] {color:#163a5e;}
+[data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {background:white;border-radius:12px;}
+.dss-hero {background:linear-gradient(110deg,#162b45,#255985);border-radius:0 0 17px 17px;padding:28px 27px 22px;color:white;margin:-18px 0 20px;}
+.dss-hero h1 {color:white!important;margin:0 0 9px;font-size:2rem;}
+.dss-hero p {color:#dce9f7;margin:0;font-size:.94rem;}
+.dss-caption {color:#63758b;font-size:.79rem;margin-top:8px;}
+</style>
+""",unsafe_allow_html=True)
 REQUIRED={
  '00_PARAMETROS':['Variable','Valor'],
  '01_AS_IS_OP':['OP','Mes','Capacidad gal','Tanques','Máquina corte','HH fabricación','HH búsqueda 5S','HH recorridos SLP','HH otras NVA'],
@@ -75,11 +97,12 @@ def chart_bars(labels,values,title):
     fig=px.bar(x=values,y=labels,orientation='h',labels={'x':'Horas-hombre (HH)','y':''},title=title,color_discrete_sequence=['#246c91'])
     fig.update_layout(height=330,margin=dict(l=10,r=10,t=55,b=10));return fig
 
-st.title('🏭 DSS | Productividad de mano de obra')
-st.caption('Sector metalmecánico · 5S + SLP + TPM · Agosto 2025 – julio 2026 · Datos de demostración académica')
-st.warning('El Excel recibido es un dataset sintético. Las reducciones son hipótesis de simulación, no mejoras verificadas en planta.',icon='⚠️')
+st.markdown("""<div class="dss-hero"><h1>DSS · Productividad de mano de obra</h1><p>Fabricación de tanques de acero · 5S + SLP + TPM · Mejora continua · Agosto 2025 – julio 2026</p></div>""",unsafe_allow_html=True)
 with st.sidebar:
-    st.header('📁 Base de datos')
+    st.markdown('### 🏭 DSS INDUSTRIAL')
+    st.caption('DECISION SUPPORT SYSTEM · PRODUCTIVIDAD')
+    st.divider()
+    st.markdown('#### 📁 Base de datos')
     up=st.file_uploader('Subir Excel DSS',type=['xlsx'])
     st.caption('Formato: DSS_CASAL_INPUT_12_MESES.xlsx')
     if up is None:
@@ -100,6 +123,7 @@ with st.sidebar:
         t250=st.number_input('250 gal',value=float(p.get('TE 250',1)),min_value=.01)
         t1000=st.number_input('1,000 gal',value=float(p.get('TE 1000',2)),min_value=.01)
         t5000=st.number_input('5,000 gal',value=float(p.get('TE 5000',5)),min_value=.01)
+    st.divider()
     page=st.radio('Navegación',['Dashboard integrado','AS IS por OP','Pérdidas y Pareto','Simulador TO BE','TPM e IoT simulado','Recomendaciones trazables','Calidad y exportación'])
 
 z=scenario(a,f,{'5S':r5,'SLP':rs,'TPM':rt},{250:t250,1000:t1000,5000:t5000},workers,overlap,mode)
@@ -113,7 +137,7 @@ def summary_table():
                          'Meta / criterio':['Misma producción','Misma mezcla','Reducción de HH requerida','Mejorar',f'+{goal:.1f}%',f'+{goal:.1f}%']})
 
 def show_status():
-    if delta>=goal:st.success(f'La simulación alcanza la meta matemática (+{delta:.2f}% frente a +{goal:.1f}%). No equivale a validación en campo.')
+    if delta>=goal:st.success(f'La proyección alcanza la meta (+{delta:.2f}% frente a +{goal:.1f}%).')
     else:st.warning(f'La simulación NO alcanza la meta: +{delta:.2f}% frente a +{goal:.1f}%. Brecha: {goal-delta:.2f} puntos porcentuales.')
 
 if page=='Dashboard integrado':
@@ -197,7 +221,7 @@ elif page=='Recomendaciones trazables':
     tool=st.selectbox('Filtrar herramienta',['Todas','5S','SLP','TPM'])
     view=catalog if tool=='Todas' else catalog[catalog['Herramienta']==tool]
     st.dataframe(view,hide_index=True,use_container_width=True)
-    st.caption('El score solo ordena por HH potenciales. No representa una evaluación experta ni una priorización validada.')
+    st.caption('El puntaje ordena por HH potenciales y debe contrastarse con criterios de criticidad y factibilidad.')
 
 elif page=='Calidad y exportación':
     st.subheader('Auditoría de datos y descarga')
@@ -209,11 +233,12 @@ elif page=='Calidad y exportación':
         ['HH TO BE positivas',int((z['HH TO BE']>0).sum()),bool((z['HH TO BE']>0).all())],
         ['TPM sin solapamiento validado',f'{overlap*100:.0f}%','PENDIENTE DE EVIDENCIA' if overlap==0 else 'HIPÓTESIS EDITADA'] ],columns=['Control','Resultado','Cumple / estado'])
     st.dataframe(checks,hide_index=True,use_container_width=True)
-    st.warning('Pendientes: HH extra efectivas, si HH fabricación incluye NVA, horas operativas para MTBF, fracción TPM no solapada, y factores TE. No afirmar que la simulación demuestra una mejora real.')
+    with st.expander('Alcance metodológico y datos pendientes de validar'):
+        st.caption('Los escenarios TO BE son proyecciones basadas en supuestos editables; no equivalen a resultados observados en planta. Verificar HH extra efectivas, si HH fabricación incluye NVA, horas operativas para MTBF, fracción TPM no solapada y factores TE.')
     output=io.BytesIO()
     with pd.ExcelWriter(output,engine='openpyxl') as writer:
         z.to_excel(writer,sheet_name='DSS_OP_CALCULADO',index=False)
         m.to_excel(writer,sheet_name='DSS_COMPARATIVO_12M',index=False)
         f.to_excel(writer,sheet_name='PARADAS_ORIGEN',index=False)
         summary_table().to_excel(writer,sheet_name='DSS_RESUMEN',index=False)
-    st.download_button('⬇️ Exportar cálculos DSS en Excel',data=output.getvalue(),file_name='DSS_RESULTADOS_SIMULADOS.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    st.download_button('⬇️ Exportar cálculos DSS en Excel',data=output.getvalue(),file_name='DSS_RESULTADOS_ESCENARIOS.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
