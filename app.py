@@ -1,244 +1,270 @@
-import io
+import io, json, time, platform
+from pathlib import Path
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
+import plotly.express as px
 
-st.set_page_config(page_title="DSS | Productividad de mano de obra", page_icon="🏭", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""
-<style>
-:root {--navy:#14263f;--blue:#245783;--ink:#18324c;--paper:#f5f7fb;}
-.stApp {background:#f5f7fb;}
-.block-container {max-width:1490px;padding-top:1.4rem;padding-bottom:3rem;}
-[data-testid="stSidebar"] {background:#14263f;}
-[data-testid="stSidebar"] * {color:#edf4fc;}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] {background:#f1f5fa;border-radius:11px;padding:9px;}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] * {color:#19354f!important;}
-[data-testid="stSidebar"] [data-testid="stRadio"] label {font-size:.91rem;}
-[data-testid="stSidebar"] [data-testid="stSlider"] label {font-size:.85rem;}
-[data-testid="stSidebar"] hr {border-color:#53657b;}
-h1,h2,h3 {color:#193b56;letter-spacing:-.02em;}
-div[data-testid="stMetric"] {background:white;padding:17px 19px;border:1px solid #e0e7ef;border-radius:14px;box-shadow:0 3px 12px rgba(24,50,76,.035);}
-[data-testid="stMetricLabel"] {color:#49627c;}
-[data-testid="stMetricValue"] {color:#163a5e;}
-[data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {background:white;border-radius:12px;}
-.dss-hero {background:linear-gradient(110deg,#162b45,#255985);border-radius:0 0 17px 17px;padding:28px 27px 22px;color:white;margin:-18px 0 20px;}
-.dss-hero h1 {color:white!important;margin:0 0 9px;font-size:2rem;}
-.dss-hero p {color:#dce9f7;margin:0;font-size:.94rem;}
-.dss-caption {color:#63758b;font-size:.79rem;margin-top:8px;}
-</style>
-""",unsafe_allow_html=True)
-REQUIRED={
- '00_PARAMETROS':['Variable','Valor'],
- '01_AS_IS_OP':['OP','Mes','Capacidad gal','Tanques','Máquina corte','HH fabricación','HH búsqueda 5S','HH recorridos SLP','HH otras NVA'],
- '02_PARADAS_TPM':['ID','Fecha','Mes','Máquina','Motivo','Tipo','Horas parada']}
+st.set_page_config(page_title='DSS | Productividad industrial', page_icon='🏭', layout='wide')
+st.markdown('''<style>.block-container{padding-top:1.3rem;max-width:1500px}div[data-testid="stMetric"]{background:#f2f5fa;border:1px solid #dce5ef;padding:14px;border-radius:12px}h1,h2,h3{color:#17324d}.stAlert{border-radius:10px}</style>''',unsafe_allow_html=True)
+st.title('DSS | Productividad de mano de obra')
+st.caption('Empresa A · Fabricación de tanques de acero · Versión V7 · Integración histórica y validación V5 · Plan pendiente de aprobación del asesor')
 
-def parse_file(file):
-    x=pd.ExcelFile(file)
-    for name,cols in REQUIRED.items():
-        if name not in x.sheet_names: raise ValueError(f'Falta hoja obligatoria: {name}')
-        have=pd.read_excel(x,sheet_name=name,nrows=0).columns.tolist()
-        missing=[c for c in cols if c not in have]
-        if missing:raise ValueError(f'En {name} faltan columnas: {", ".join(missing)}')
-    p=pd.read_excel(x,'00_PARAMETROS'); a=pd.read_excel(x,'01_AS_IS_OP'); f=pd.read_excel(x,'02_PARADAS_TPM')
-    a=a.dropna(subset=['OP']).copy();f=f.dropna(subset=['ID']).copy()
-    for col in ['Capacidad gal','Tanques','HH fabricación','HH búsqueda 5S','HH recorridos SLP','HH otras NVA']:
-        a[col]=pd.to_numeric(a[col],errors='coerce')
-    f['Horas parada']=pd.to_numeric(f['Horas parada'],errors='coerce')
-    if a.empty or f.empty:raise ValueError('La base no contiene OP o paradas.')
-    if a['OP'].duplicated().any():raise ValueError('Hay códigos de OP duplicados.')
-    if a[['Capacidad gal','Tanques','HH fabricación','HH búsqueda 5S','HH recorridos SLP','HH otras NVA']].isna().any().any():raise ValueError('Existen valores numéricos vacíos o inválidos en las OP.')
-    if (a[['Tanques','HH fabricación','HH búsqueda 5S','HH recorridos SLP','HH otras NVA']]<0).any().any() or (a['HH fabricación']<=0).any():raise ValueError('Existen HH negativas o HH de fabricación iguales a cero.')
-    if f['Horas parada'].isna().any() or (f['Horas parada']<0).any():raise ValueError('Hay horas de parada inválidas.')
-    if not a['Mes'].astype(str).str.fullmatch(r'\d{4}-\d{2}').all():raise ValueError('El campo Mes debe ser AAAA-MM.')
-    params=dict(zip(p['Variable'].astype(str),pd.to_numeric(p['Valor'],errors='coerce')))
-    return a,f,params
-
+CAPS=[250,1000,5000]
 @st.cache_data(show_spinner=False)
-def load_bytes(data):return parse_file(io.BytesIO(data))
+def load_book(content):
+    bio=io.BytesIO(content)
+    names=pd.ExcelFile(bio).sheet_names
+    bio.seek(0)
+    if {'OP_REALES','NVA_REALES','PARADAS_REALES'}.issubset(names):
+        mapping={'Ordenes_OP':'OP_REALES','Actividades_NVA':'NVA_REALES','Paradas_Corte':'PARADAS_REALES','Personal':'PERSONAL_SUPUESTO'}
+        book={k:pd.read_excel(bio,sheet_name=v) for k,v in mapping.items()}
+        book['V5']=pd.read_excel(bio,sheet_name='RESULTADOS_V5') if 'RESULTADOS_V5' in names else pd.DataFrame()
+        book['semillas']=pd.read_excel(bio,sheet_name='SEMILLAS_Y_TIEMPOS') if 'SEMILLAS_Y_TIEMPOS' in names else pd.DataFrame()
+        return book
+    book={n:pd.read_excel(bio,sheet_name=n) for n in ['Ordenes_OP','Actividades_NVA','Paradas_Corte','Personal']}
+    book['V5']=pd.DataFrame()
+    book['semillas']=pd.DataFrame()
+    return book
 
-def number(x,d=2):return f'{x:,.{d}f}'
+def normalize(book):
+    op=book['Ordenes_OP'].copy(); nv=book['Actividades_NVA'].copy(); pa=book['Paradas_Corte'].copy()
+    for df in [op,nv,pa]: df.columns=df.columns.astype(str).str.strip()
+    for df in [op,nv,pa]:
+        if 'Mes' in df: df['Mes']=df['Mes'].astype(str).str.strip()
+    for c in ['Capacidad gal','Cantidad','HH fabricación','HH NVA','HH total OP','Distancia NVA m']:
+        if c not in op: raise ValueError(f'Falta columna: {c}')
+        op[c]=pd.to_numeric(op[c],errors='coerce')
+    for c in ['HH perdidas','Distancia recorrida m']: nv[c]=pd.to_numeric(nv[c],errors='coerce')
+    pa['Horas parada / reparación']=pd.to_numeric(pa['Horas parada / reparación'],errors='coerce')
+    required=['OP','Mes','Capacidad gal','Cantidad','HH fabricación','HH NVA','HH total OP']
+    if any(c not in op for c in required): raise ValueError('Faltan columnas esenciales de OP')
+    if op['OP'].duplicated().any(): raise ValueError('Códigos OP duplicados')
+    op['Capacidad gal']=op['Capacidad gal'].astype('Int64')
+    nvagg=nv.groupby('OP',as_index=False).agg(nva_reg=('HH perdidas','sum'),dist_reg=('Distancia recorrida m','sum'))
+    op=op.merge(nvagg,on='OP',how='left',validate='one_to_one')
+    return op,nv,pa
 
-def scenario(a,f,ratios,tef,workers,overlap,mode):
-    z=a.copy();z['TE']=z['Tanques']*z['Capacidad gal'].map(tef)
-    z['HH 5S AS IS']=z['HH búsqueda 5S'];z['HH SLP AS IS']=z['HH recorridos SLP']
-    z['HH otras AS IS']=z['HH otras NVA'];z['HH fabricación base']=z['HH fabricación']
-    z['HH AS IS']=z['HH fabricación base']+z['HH 5S AS IS']+z['HH SLP AS IS']+z['HH otras AS IS']
-    z['HH recuperadas 5S']=z['HH 5S AS IS']*ratios['5S'];z['HH recuperadas SLP']=z['HH SLP AS IS']*ratios['SLP']
-    # Allocate TPM loss by machine/month to associated OPs, not by arbitrary equal shares across the whole plant.
-    ff=f.groupby(['Mes','Máquina'],as_index=False)['Horas parada'].sum().rename(columns={'Mes':'Mes','Máquina':'Máquina corte','Horas parada':'Horas parada máquina'})
-    z=z.merge(ff,on=['Mes','Máquina corte'],how='left');z['Horas parada máquina']=z['Horas parada máquina'].fillna(0)
-    n=z.groupby(['Mes','Máquina corte'])['OP'].transform('count').clip(lower=1)
-    z['HH TPM atribuibles']=z['Horas parada máquina']*workers/n
-    z['HH recuperadas TPM']=z['HH TPM atribuibles']*ratios['TPM']*overlap
-    z['HH recuperadas']=z[['HH recuperadas 5S','HH recuperadas SLP','HH recuperadas TPM']].sum(axis=1)
-    z['HH TO BE']=z['HH AS IS']-z['HH recuperadas']
-    if mode=='Conservador (no reducir HH fabricación)':
-        z['HH TO BE']=np.maximum(z['HH TO BE'],z['HH fabricación base']+z['HH otras AS IS'])
-        z['HH recuperadas']=z['HH AS IS']-z['HH TO BE']
-    z['Tanques/HH AS IS']=z['Tanques']/z['HH AS IS']
-    z['Tanques/HH TO BE']=z['Tanques']/z['HH TO BE']
-    z['TE/HH AS IS']=z['TE']/z['HH AS IS']
-    z['TE/HH TO BE']=z['TE']/z['HH TO BE']
-    z['Mejora %']=(z['TE/HH TO BE']/z['TE/HH AS IS']-1)*100
-    return z
+def productivity(df):
+    t=df.groupby('Capacidad gal',dropna=False).agg(tanques=('Cantidad','sum'),HH=('HH total OP','sum'),NVA=('HH NVA','sum'),distancia=('dist_reg','sum'),OP=('OP','count')).reset_index()
+    t['tanques_HH']=np.where(t['HH']>0,t['tanques']/t['HH'],np.nan)
+    return t
 
-def aggregate(z):
-    cols=['Tanques','TE','HH AS IS','HH TO BE','HH 5S AS IS','HH SLP AS IS','HH otras AS IS','HH recuperadas 5S','HH recuperadas SLP','HH recuperadas TPM','HH recuperadas']
-    m=z.groupby('Mes',as_index=False)[cols].sum().sort_values('Mes')
-    for x in [m]:
-        x['Tanques/HH AS IS']=x['Tanques']/x['HH AS IS'];x['Tanques/HH TO BE']=x['Tanques']/x['HH TO BE']
-        x['TE/HH AS IS']=x['TE']/x['HH AS IS'];x['TE/HH TO BE']=x['TE']/x['HH TO BE']
-        x['Mejora %']=(x['TE/HH TO BE']/x['TE/HH AS IS']-1)*100
-    return m
+def fmt(n,dec=3): return f'{n:,.{dec}f}'
 
-def chart_bars(labels,values,title):
-    fig=px.bar(x=values,y=labels,orientation='h',labels={'x':'Horas-hombre (HH)','y':''},title=title,color_discrete_sequence=['#246c91'])
-    fig.update_layout(height=330,margin=dict(l=10,r=10,t=55,b=10));return fig
+st.sidebar.header('Datos y configuración')
+upload=st.sidebar.file_uploader('Cargar Excel integrado V5 (.xlsx)',type=['xlsx'])
+default=Path('/mnt/data/Validacion_DSS_Integrada_Rubrica(1).xlsx')
+if upload is None and default.exists():
+    content=default.read_bytes(); st.sidebar.info('Se usa la base de demostración local. En Streamlit Cloud carga el Excel.')
+elif upload is not None: content=upload.getvalue()
+else:
+    st.info('Carga Validacion_DSS_Integrada_Rubrica.xlsx desde la barra lateral para comenzar.'); st.stop()
+try:
+    book=load_book(content)
+    op,nva,par=normalize(book)
+    v5=book.get('V5',pd.DataFrame())
+    v5_seeds=book.get('semillas',pd.DataFrame())
+except Exception as e:
+    st.error(f'No se pudo leer la estructura: {e}'); st.stop()
+months=sorted(op['Mes'].dropna().unique())
+selected=st.sidebar.multiselect('Meses del análisis histórico',months,default=months)
+capacities=st.sidebar.multiselect('Capacidades (gal)',CAPS,default=CAPS)
+if not selected or not capacities: st.warning('Selecciona al menos un mes y una capacidad.');st.stop()
+base=op[op['Mes'].isin(selected)&op['Capacidad gal'].isin(capacities)].copy()
+pa=par[par['Mes'].isin(selected)].copy()
+nv=nva[nva['Mes'].isin(selected)&nva['Capacidad gal'].isin(capacities)].copy()
+rec=st.sidebar.slider('Recuperación hipotética de HH NVA (%)',0,40,40,5)/100
+nrep=st.sidebar.number_input('Réplicas por escenario',min_value=30,max_value=500,value=50,step=10)
+period=st.sidebar.number_input('Meses por réplica',min_value=1,max_value=12,value=6)
+seed_master=st.sidebar.number_input('Semilla maestra',min_value=1,value=20261114)
+limit=st.sidebar.number_input('Umbral provisional por réplica (segundos)',min_value=1,value=60)
+st.sidebar.warning('Recuperación 40 % = meta/escenario, no resultado observado. Personal = SUPUESTO.')
 
-st.markdown("""<div class="dss-hero"><h1>DSS · Productividad de mano de obra</h1><p>Fabricación de tanques de acero · 5S + SLP + TPM · Mejora continua · Agosto 2025 – julio 2026</p></div>""",unsafe_allow_html=True)
-with st.sidebar:
-    st.markdown('### 🏭 DSS INDUSTRIAL')
-    st.caption('DECISION SUPPORT SYSTEM · PRODUCTIVIDAD')
-    st.divider()
-    st.markdown('#### 📁 Base de datos')
-    up=st.file_uploader('Subir Excel DSS',type=['xlsx'])
-    st.caption('Formato: DSS_CASAL_INPUT_12_MESES.xlsx')
-    if up is None:
-        st.info('Sube el Excel para iniciar el análisis.');st.stop()
-    try:a,f,p=load_bytes(up.getvalue())
-    except Exception as e:st.error(f'No se puede cargar el Excel: {e}');st.stop()
-    st.success(f'{len(a)} OP · {len(f)} paradas · {a.Mes.nunique()} meses')
-    st.header('⚙️ Hipótesis TO BE')
-    r5=st.slider('Reducción de búsquedas · 5S (%)',0,100,int(float(p.get('Reducción 5S',0.5))*100),5)/100
-    rs=st.slider('Reducción de recorridos · SLP (%)',0,100,int(float(p.get('Reducción SLP',0.5))*100),5)/100
-    rt=st.slider('Reducción de paradas · TPM (%)',0,100,int(float(p.get('Reducción TPM',0.4))*100),5)/100
-    workers=st.number_input('Operarios afectados por parada (supuesto)',min_value=1,max_value=45,value=int(p.get('Operarios afectados por parada',2)))
-    overlap=st.slider('Fracción TPM no contabilizada en otras pérdidas (%)',0,100,int(float(p.get('Fracción TPM sin solapamiento',0))*100),5)/100
-    st.caption('Mantener TPM en 0% de fracción no solapada hasta verificar que las esperas por paradas no estén incluidas en otras NVA.')
-    goal=st.number_input('Meta de productividad (%)',min_value=0.0,max_value=100.0,value=float(p.get('Meta mejora',0.1))*100,step=1.0)
-    mode=st.selectbox('Criterio de simulación',['Conservador (no reducir HH fabricación)'])
-    with st.expander('Factores de tanque equivalente (TE)'):
-        t250=st.number_input('250 gal',value=float(p.get('TE 250',1)),min_value=.01)
-        t1000=st.number_input('1,000 gal',value=float(p.get('TE 1000',2)),min_value=.01)
-        t5000=st.number_input('5,000 gal',value=float(p.get('TE 5000',5)),min_value=.01)
-    st.divider()
-    page=st.radio('Navegación',['Dashboard integrado','AS IS por OP','Pérdidas y Pareto','Simulador TO BE','TPM e IoT simulado','Recomendaciones trazables','Calidad y exportación'])
+pages=st.tabs(['Resumen ejecutivo','Diagnóstico y priorización','AS-IS / TO-BE','Escenarios y réplicas','Validación y evidencias','Resultados V5 integrados'])
+with pages[0]:
+    st.subheader('Situación histórica AS-IS')
+    st.info('AS-IS histórico: tanques terminados / HH total OP, por capacidad. TO-BE: mejora PROYECTADA, no observada.')
+    a,b,c,d=st.columns(4)
+    a.metric('OP',f'{len(base):,}');b.metric('Tanques',fmt(base['Cantidad'].sum(),0));c.metric('HH totales',fmt(base['HH total OP'].sum(),1));d.metric('HH NVA',fmt(base['HH NVA'].sum(),1))
+    tab=productivity(base);st.dataframe(tab.rename(columns={'tanques_HH':'Tanques/HH','distancia':'Recorridos (m)'}),use_container_width=True,hide_index=True)
+    fig=px.bar(tab,x='Capacidad gal',y='tanques_HH',text_auto='.4f',title='Productividad histórica por capacidad',labels={'tanques_HH':'Tanques / HH'})
+    st.plotly_chart(fig,use_container_width=True)
+    monthly=base.groupby(['Mes','Capacidad gal'],as_index=False).agg(tanques=('Cantidad','sum'),hh=('HH total OP','sum'))
+    monthly['productividad']=monthly['tanques']/monthly['hh']
+    st.plotly_chart(px.line(monthly,x='Mes',y='productividad',color='Capacidad gal',markers=True,title='Evolución mensual (sin mezclar capacidades)'),use_container_width=True)
+with pages[1]:
+    st.subheader('Pérdidas observadas y priorización orientativa')
+    n=nv.groupby('Actividad sin valor',as_index=False).agg(HH=('HH perdidas','sum'),distancia_m=('Distancia recorrida m','sum')).sort_values('HH',ascending=False)
+    st.plotly_chart(px.bar(n,x='Actividad sin valor',y='HH',title='Pareto de HH NVA por actividad'),use_container_width=True)
+    st.dataframe(n,use_container_width=True,hide_index=True)
+    st.caption('Regla de línea base ingenua: priorizar únicamente por HH NVA acumuladas. No equivale a una comparación experimental ya ejecutada.')
+    p=pa.groupby(['Máquina','Motivo'],as_index=False).agg(horas=('Horas parada / reparación','sum'),eventos=('Motivo','size')).sort_values('horas',ascending=False)
+    st.plotly_chart(px.bar(p,x='Máquina',y='horas',color='Motivo',title='Horas de parada por máquina y motivo'),use_container_width=True)
+    st.dataframe(p,use_container_width=True,hide_index=True)
+    st.markdown('**Reglas de recomendación (heurísticas, no optimizadas):** búsquedas → 5S; recorridos → SLP; paradas → TPM; eventos digitales → lógica IoT simulada. Se debe comprobar su pertinencia con el responsable.')
+    st.warning('MTTR = duración media de reparación solo si cada evento corresponde a una reparación completa. MTBF requiere horas efectivas de operación por máquina, no disponibles de forma verificada.')
+    if len(pa): st.metric('Duración media de parada (proxy; no MTTR validado)',f"{pa['Horas parada / reparación'].mean():.2f} h")
+with pages[2]:
+    st.subheader('Comparación AS-IS / TO-BE hipotética')
+    st.caption('Las HH recuperadas se calculan como recuperación × HH NVA; no se aplica sobre todas las HH ni sobre el 11 % estimado.')
+    alternative=st.radio('Interpretación TO-BE',['Producción constante: menos HH','HH constantes: capacidad equivalente potencial'],horizontal=True)
+    rows=[]
+    for _,r in productivity(base).iterrows():
+        hrec=rec*r['NVA'];ht=r['HH']-hrec
+        if ht<=0: continue
+        if alternative.startswith('Producción'):
+            qt=r['tanques'];hh=ht;note='Proyección de HH liberadas, no ahorro observado'
+        else:
+            qt=r['tanques']*r['HH']/ht;hh=r['HH'];note='Equivalentes continuos, NO tanques terminados'
+        rows.append({'Capacidad gal':int(r['Capacidad gal']),'Tanques AS-IS':r['tanques'],'HH AS-IS':r['HH'],'Tanques TO-BE hipotéticos':qt,'HH TO-BE hipotéticas':hh,'Productividad AS-IS':r['tanques_HH'],'Productividad TO-BE hipotética':qt/hh,'Variación proyectada (%)':100*((qt/hh)/r['tanques_HH']-1),'HH NVA recuperables hipotéticas':hrec,'Interpretación':note})
+    tobe=pd.DataFrame(rows)
+    st.dataframe(tobe,use_container_width=True,hide_index=True)
+    chart=tobe.melt(id_vars=['Capacidad gal'],value_vars=['Productividad AS-IS','Productividad TO-BE hipotética'],var_name='Estado',value_name='Tanques/HH')
+    st.plotly_chart(px.bar(chart,x='Capacidad gal',y='Tanques/HH',color='Estado',barmode='group',title='Comparación por capacidad: observado vs hipotético'),use_container_width=True)
+    st.warning('La variación porcentual es una MEJORA PROYECTADA por recuperación hipotética de pérdidas; NO es mejora real medida. El 40 % corresponde a recuperación de pérdidas, no a aumento directo de tanques/HH.')
+    st.markdown('#### Sensibilidad de mejora proyectada por capacidad')
+    sens=[]
+    for recovery in [0,.10,.20,.30,.40]:
+        for _,r in productivity(base).iterrows():
+            hh_new=r['HH']-recovery*r['NVA']
+            if hh_new>0 and r['HH']>0:
+                sens.append({'Capacidad gal':int(r['Capacidad gal']),'Recuperación de NVA':f'{recovery:.0%}',
+                    'Productividad AS-IS':r['tanques']/r['HH'],
+                    'Productividad TO-BE proyectada':r['tanques']/hh_new,
+                    'Mejora de productividad proyectada (%)':100*(r['HH']/hh_new-1)})
+    sensitivity=pd.DataFrame(sens)
+    st.dataframe(sensitivity,use_container_width=True,hide_index=True)
+    st.plotly_chart(px.line(sensitivity,x='Recuperación de NVA',y='Mejora de productividad proyectada (%)',
+        color='Capacidad gal',markers=True,title='Mejora de productividad proyectada, NO observada'),use_container_width=True)
+    st.download_button('Exportar sensibilidad TO-BE',tobe.to_csv(index=False).encode('utf-8-sig'),'tobe_hipotetico.csv','text/csv')
 
-z=scenario(a,f,{'5S':r5,'SLP':rs,'TPM':rt},{250:t250,1000:t1000,5000:t5000},workers,overlap,mode)
-m=aggregate(z)
-phys=z['Tanques'].sum();te=z['TE'].sum();h0=z['HH AS IS'].sum();h1=z['HH TO BE'].sum();rec=h0-h1
-p0=te/h0;p1=te/h1;delta=(p1/p0-1)*100
+# Una réplica = una ventana contigua de meses, con bootstrap conjunto por capacidad.
+# No genera OP nuevas a partir de datos patológicos sin identificarlas.
+def simulate(source,months,replicas,period,master,scenario,threshold):
+    if len(months)<period: raise ValueError('Periodo solicitado mayor que el historial disponible')
+    windows=[months[i:i+period] for i in range(len(months)-period+1)]
+    children=np.random.SeedSequence(master).spawn(replicas)
+    outputs=[]; samples=[]; seeds=[]
+    for idx,child in enumerate(children,1):
+        start=time.perf_counter();seed=int(child.generate_state(1)[0]);rng=np.random.default_rng(seed)
+        win=windows[int(rng.integers(len(windows)))];ref=source[source['Mes'].isin(win)].copy()
+        generated=[]
+        for cap,g in ref.groupby('Capacidad gal'):
+            pool=source[source['Capacidad gal']==cap]
+            take=pool.iloc[rng.integers(0,len(pool),size=len(g))].reset_index(drop=True)
+            v=g.reset_index(drop=True).copy()
+            # Conserva el conjunto correlacionado de variables por OP.
+            for col in ['HH fabricación','HH NVA','HH total OP','nva_reg','dist_reg','Cantidad']:
+                v[col]=take[col].to_numpy()
+            # Factores exploratorios, no estimaciones empresariales.
+            if scenario=='Borde': factor=rng.choice([0.9,1.1])
+            elif scenario=='Extremo': factor=rng.choice([0.7,1.3])
+            else: factor=1.0
+            if scenario in ['Borde','Extremo']:
+                v['HH fabricación']*=factor;v['HH NVA']*=factor;v['HH total OP']*=factor
+                v['nva_reg']*=factor;v['dist_reg']*=factor
+            if scenario=='Patológico':
+                # Prueba adversarial, excluir del cálculo hasta resolver inválidos.
+                n=max(1,int(np.ceil(len(v)*0.02)))
+                bad=rng.choice(len(v),size=min(n,len(v)),replace=False)
+                v.loc[bad,'HH total OP']=np.nan
+                if len(v)>2:v.loc[v.index[-1],'HH total OP']=0
+            v['OP']=[f'SYN-{scenario[:3].upper()}-{idx:03d}-{int(cap)}-{j:04d}' for j in range(len(v))]
+            v['replica']=idx;v['semilla']=seed;v['escenario']=scenario;v['origen']='SINTETICO';v['ventana']=';'.join(win)
+            generated.append(v)
+        z=pd.concat(generated,ignore_index=True)
+        invalid=z['HH total OP'].isna()|(z['HH total OP']<=0)
+        z['registro_invalido']=invalid
+        valid=z.loc[~invalid]
+        for cap,g in valid.groupby('Capacidad gal'):
+            qty=g['Cantidad'].sum();hh=g['HH total OP'].sum();nva=g['HH NVA'].sum()
+            outputs.append({'escenario':scenario,'replica':idx,'semilla':seed,'ventana':'|'.join(win),'capacidad_gal':int(cap),'OP_validas':len(g),'OP_invalidas':int(invalid.sum()),'tanques':qty,'HH':hh,'HH_NVA':nva,'productividad_ASIS_sintetica':qty/hh if hh>0 else np.nan,'origen':'SINTETICO','mejora_real_demostrada':False})
+        samples.append(z)
+        elapsed=time.perf_counter()-start
+        seeds.append({'escenario':scenario,'replica':idx,'semilla':seed,'ventana':'|'.join(win),'tiempo_s':elapsed,'excede_umbral_provisional':elapsed>threshold})
+    return pd.DataFrame(outputs),pd.concat(samples,ignore_index=True),pd.DataFrame(seeds)
 
-def summary_table():
-    return pd.DataFrame({'Indicador':['Tanques físicos','Tanques equivalentes (TE)','HH utilizadas / requeridas','Tanques/HH','TE/HH','Mejora de productividad TE/HH'],
-                         'AS IS':[phys,te,h0,phys/h0,p0,0], 'TO BE simulado':[phys,te,h1,phys/h1,p1,delta],
-                         'Meta / criterio':['Misma producción','Misma mezcla','Reducción de HH requerida','Mejorar',f'+{goal:.1f}%',f'+{goal:.1f}%']})
-
-def show_status():
-    if delta>=goal:st.success(f'La proyección alcanza la meta (+{delta:.2f}% frente a +{goal:.1f}%).')
-    else:st.warning(f'La simulación NO alcanza la meta: +{delta:.2f}% frente a +{goal:.1f}%. Brecha: {goal-delta:.2f} puntos porcentuales.')
-
-if page=='Dashboard integrado':
-    st.subheader('Diagnóstico integral · AS IS vs. TO BE vs. meta')
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric('Tanques/HH · AS IS',f'{phys/h0:.5f}')
-    c2.metric('TE/HH · AS IS',f'{p0:.5f}')
-    c3.metric('HH recuperables',number(rec))
-    c4.metric('Mejora TO BE',f'{delta:.2f}%',delta=f'{delta-goal:+.2f} pp vs meta',delta_color='normal')
-    st.dataframe(summary_table(),use_container_width=True,hide_index=True)
-    show_status()
-    c1,c2=st.columns(2)
-    with c1:
-        losses=pd.DataFrame({'Causa':['5S · búsquedas','SLP · recorridos','Otras NVA','TPM · horas parada máquina'],
-            'HH':[z['HH 5S AS IS'].sum(),z['HH SLP AS IS'].sum(),z['HH otras AS IS'].sum(),f['Horas parada'].sum()]})
-        st.plotly_chart(chart_bars(losses['Causa'],losses['HH'],'Pérdidas AS IS (TPM en horas máquina)'),use_container_width=True)
-    with c2:
-        fig=go.Figure()
-        fig.add_trace(go.Scatter(x=m['Mes'],y=m['TE/HH AS IS'],name='AS IS',mode='lines+markers'))
-        fig.add_trace(go.Scatter(x=m['Mes'],y=m['TE/HH TO BE'],name='TO BE simulado',mode='lines+markers'))
-        fig.add_trace(go.Scatter(x=m['Mes'],y=m['TE/HH AS IS']*(1+goal/100),name='Meta mensual (+%)',line=dict(dash='dash')))
-        fig.update_layout(title='Productividad TE/HH por mes',height=330,margin=dict(l=10,r=10,t=55,b=10))
-        st.plotly_chart(fig,use_container_width=True)
-    st.subheader('Comparación mensual')
-    st.dataframe(m[['Mes','Tanques','TE','HH AS IS','HH recuperadas','HH TO BE','TE/HH AS IS','TE/HH TO BE','Mejora %']],hide_index=True,use_container_width=True)
-
-elif page=='AS IS por OP':
-    st.subheader('Órdenes de producción · escenario actual')
-    months=st.multiselect('Meses',sorted(z['Mes'].unique()),default=sorted(z['Mes'].unique()))
-    sizes=st.multiselect('Tamaños (gal)',sorted(z['Capacidad gal'].unique()),default=sorted(z['Capacidad gal'].unique()))
-    v=z[z['Mes'].isin(months)&z['Capacidad gal'].isin(sizes)]
-    st.dataframe(v[['OP','Mes','Capacidad gal','Tanques','Máquina corte','HH fabricación base','HH 5S AS IS','HH SLP AS IS','HH otras AS IS','HH AS IS','TE','TE/HH AS IS']],hide_index=True,use_container_width=True)
-    st.caption('HH AS IS = HH fabricación + HH búsqueda + HH recorridos + HH otras NVA. Revisar si la fabricación ya incorpora esperas para evitar doble conteo.')
-
-elif page=='Pérdidas y Pareto':
-    st.subheader('Análisis de pérdidas · AS IS')
-    causes=pd.DataFrame({'Causa':['Búsqueda de herramientas','Recorridos innecesarios','Otras NVA'],
-        'Herramienta':['5S','SLP','No atribuida'],
-        'HH':[z['HH 5S AS IS'].sum(),z['HH SLP AS IS'].sum(),z['HH otras AS IS'].sum()]})
-    causes=causes.sort_values('HH',ascending=False)
-    causes['% acumulado']=causes['HH'].cumsum()/causes['HH'].sum()*100
-    st.dataframe(causes,hide_index=True,use_container_width=True)
-    st.plotly_chart(chart_bars(causes['Causa'],causes['HH'],'Pareto de HH NVA clasificadas'),use_container_width=True)
-    st.info('Las horas de parada de máquinas se presentan aparte: no son automáticamente HH perdidas de operarios.')
-    st.dataframe(f.groupby(['Máquina','Motivo'],as_index=False).agg(Eventos=('ID','count'),**{'Horas parada':('Horas parada','sum')}).sort_values('Horas parada',ascending=False),hide_index=True,use_container_width=True)
-
-elif page=='Simulador TO BE':
-    st.subheader('Aplicación de herramientas → HH recuperadas → productividad')
-    tools=pd.DataFrame({'Herramienta':['5S','SLP','TPM'],
-        'Pérdida de referencia (HH)':[z['HH 5S AS IS'].sum(),z['HH SLP AS IS'].sum(),z['HH TPM atribuibles'].sum()],
-        'Reducción supuesta':[r5,rs,rt*overlap],
-        'HH recuperadas':[z['HH recuperadas 5S'].sum(),z['HH recuperadas SLP'].sum(),z['HH recuperadas TPM'].sum()]})
-    st.dataframe(tools,hide_index=True,use_container_width=True,column_config={'Reducción supuesta':st.column_config.NumberColumn(format='%.1f')})
-    st.metric('HH recuperadas calculadas',number(rec))
-    st.dataframe(summary_table(),hide_index=True,use_container_width=True)
-    show_status()
-    st.caption('En este modelo TO BE se mantiene la misma producción y se reduce el tiempo requerido. Para afirmar que se fabricarán tanques adicionales es necesario verificar demanda, tiempos estándar y recursos disponibles.')
-    st.subheader('Trazabilidad por OP')
-    st.dataframe(z[['OP','Mes','Capacidad gal','HH AS IS','HH recuperadas 5S','HH recuperadas SLP','HH recuperadas TPM','HH TO BE','TE/HH AS IS','TE/HH TO BE','Mejora %']],hide_index=True,use_container_width=True)
-
-elif page=='TPM e IoT simulado':
-    st.subheader('Paradas de máquinas de corte · registro histórico del dataset')
-    g=f.groupby('Máquina',as_index=False).agg(Eventos=('ID','count'),Horas_parada=('Horas parada','sum'),MTTR_h=('Horas parada','mean'))
-    st.dataframe(g.rename(columns={'Horas_parada':'Horas parada','MTTR_h':'MTTR (h/falla)'}),hide_index=True,use_container_width=True)
-    st.plotly_chart(px.bar(g,x='Máquina',y='Horas_parada',title='Paradas por equipo',color_discrete_sequence=['#246c91']),use_container_width=True)
-    st.info('MTBF requiere horas reales de funcionamiento por máquina; el Excel actual no las contiene. No se calcula un MTBF ficticio.')
-    st.subheader('Alertas IoT · reglas simuladas, NO sensores conectados')
-    threshold=st.number_input('Umbral de alerta por evento (horas)',min_value=0.1,value=2.0,step=0.5)
-    alerts=f[f['Horas parada']>=threshold].copy()
-    alerts['Alerta simulada']=np.where(alerts['Horas parada']>=threshold*2,'CRÍTICA','REVISAR')
-    st.dataframe(alerts[['ID','Mes','Máquina','Motivo','Horas parada','Alerta simulada']],hide_index=True,use_container_width=True)
-
-elif page=='Recomendaciones trazables':
-    st.subheader('Recomendaciones según causas cuantificadas')
-    catalog=pd.DataFrame([
-        ['5S','Búsqueda de herramientas',z['HH 5S AS IS'].sum(),'Clasificar, señalizar y ubicar herramientas por punto de uso','Jefe de producción','Minutos de búsqueda/OP'],
-        ['SLP','Recorridos innecesarios',z['HH SLP AS IS'].sum(),'Medir recorridos, diseñar FROM–TO y rediseñar ubicaciones','Ingeniería de procesos','Metros recorridos/OP'],
-        ['TPM','Paradas correctivas',z['HH TPM atribuibles'].sum(),'Mantenimiento autónomo, inspecciones y análisis de fallas','Mantenimiento','HH parada y MTTR'] ],columns=['Herramienta','Problema','HH impacto potencial','Acción sugerida','Responsable sugerido','KPI'])
-    catalog['Score heurístico']=np.where(catalog['HH impacto potencial'].max()>0,100*catalog['HH impacto potencial']/catalog['HH impacto potencial'].max(),0)
-    catalog=catalog.sort_values('Score heurístico',ascending=False)
-    tool=st.selectbox('Filtrar herramienta',['Todas','5S','SLP','TPM'])
-    view=catalog if tool=='Todas' else catalog[catalog['Herramienta']==tool]
-    st.dataframe(view,hide_index=True,use_container_width=True)
-    st.caption('El puntaje ordena por HH potenciales y debe contrastarse con criterios de criticidad y factibilidad.')
-
-elif page=='Calidad y exportación':
-    st.subheader('Auditoría de datos y descarga')
+with pages[3]:
+    st.subheader('Generación de escenarios experimentales')
+    st.info('Cada réplica abarca una ventana contigua de seis meses (configurable). El bootstrap preserva asociaciones entre variables de cada OP, pero no crea evidencia empresarial nueva.')
+    scenarios=st.multiselect('Escenarios a generar',['Típico','Borde','Extremo','Patológico'],default=['Típico'])
+    st.caption('Borde ±10 % y extremo ±30 % son perturbaciones exploratorias, no rangos validados. Patológico introduce HH faltantes/cero para verificar rechazo de entradas.')
+    if st.button('Ejecutar réplicas y guardar evidencia',type='primary'):
+        if not scenarios:st.warning('Selecciona al menos un escenario.')
+        else:
+            t0=time.perf_counter();outs=[];details=[];seedlist=[]
+            try:
+                for j,s in enumerate(scenarios):
+                    o,d,sd=simulate(op,sorted(op['Mes'].unique()),int(nrep),int(period),int(seed_master)+100000*j,s,int(limit))
+                    outs.append(o);details.append(d);seedlist.append(sd)
+                st.session_state['exp_results']=pd.concat(outs,ignore_index=True)
+                st.session_state['exp_details']=pd.concat(details,ignore_index=True)
+                st.session_state['exp_seeds']=pd.concat(seedlist,ignore_index=True)
+                st.session_state['exp_elapsed']=time.perf_counter()-t0
+                st.success('Generación completada; resultados etiquetados SINTÉTICO.')
+            except Exception as e:st.error(f'Generación interrumpida: {e}')
+    if 'exp_results' in st.session_state:
+        rr=st.session_state['exp_results'];ss=st.session_state['exp_seeds']
+        st.metric('Duración total',f"{st.session_state['exp_elapsed']:.2f} s")
+        if ss['excede_umbral_provisional'].any():st.error('Contingencia: una o más réplicas excedieron el umbral provisional.')
+        st.dataframe(rr.head(100),use_container_width=True,hide_index=True)
+        st.plotly_chart(px.box(rr,x='capacidad_gal',y='productividad_ASIS_sintetica',color='escenario',title='Variabilidad sintética por escenario y capacidad'),use_container_width=True)
+        z=io.BytesIO()
+        with pd.ExcelWriter(z,engine='xlsxwriter') as writer:
+            rr.to_excel(writer,sheet_name='Resultados_replicas',index=False)
+            st.session_state['exp_details'].to_excel(writer,sheet_name='OP_sinteticas',index=False)
+            ss.to_excel(writer,sheet_name='Semillas_y_tiempos',index=False)
+        st.download_button('Descargar evidencia experimental (.xlsx)',z.getvalue(),'DSS_V6_escenarios.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+with pages[4]:
+    st.subheader('Auditoría y preparación de validación')
+    mismatch=(base['HH fabricación']+base['HH NVA']-base['HH total OP']).abs()
+    mismatch_nva=(base['HH NVA']-base['nva_reg']).abs()
     checks=pd.DataFrame([
-        ['OP únicas',len(z),len(z['OP'].unique())==len(z)],
-        ['Meses',z['Mes'].nunique(),z['Mes'].nunique()==12],
-        ['Paradas',len(f),True],
-        ['Máquinas de corte',f['Máquina'].nunique(),f['Máquina'].nunique()==4],
-        ['HH TO BE positivas',int((z['HH TO BE']>0).sum()),bool((z['HH TO BE']>0).all())],
-        ['TPM sin solapamiento validado',f'{overlap*100:.0f}%','PENDIENTE DE EVIDENCIA' if overlap==0 else 'HIPÓTESIS EDITADA'] ],columns=['Control','Resultado','Cumple / estado'])
-    st.dataframe(checks,hide_index=True,use_container_width=True)
-    with st.expander('Alcance metodológico y datos pendientes de validar'):
-        st.caption('Los escenarios TO BE son proyecciones basadas en supuestos editables; no equivalen a resultados observados en planta. Verificar HH extra efectivas, si HH fabricación incluye NVA, horas operativas para MTBF, fracción TPM no solapada y factores TE.')
-    output=io.BytesIO()
-    with pd.ExcelWriter(output,engine='openpyxl') as writer:
-        z.to_excel(writer,sheet_name='DSS_OP_CALCULADO',index=False)
-        m.to_excel(writer,sheet_name='DSS_COMPARATIVO_12M',index=False)
-        f.to_excel(writer,sheet_name='PARADAS_ORIGEN',index=False)
-        summary_table().to_excel(writer,sheet_name='DSS_RESUMEN',index=False)
-    st.download_button('⬇️ Exportar cálculos DSS en Excel',data=output.getvalue(),file_name='DSS_RESULTADOS_ESCENARIOS.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        ['Unicidad de OP',bool(not op['OP'].duplicated().any()),'Registro histórico'],
+        ['HH total OP = HH fabricación + HH NVA',bool((mismatch<0.02).all()),'Tolerancia 0,02 HH; [VERIFICAR] definición'],
+        ['NVA por OP concilia',bool((mismatch_nva<0.02).all()),'Tolerancia 0,02 HH'],
+        ['HH total OP positivas',bool((base['HH total OP']>0).all()),'Necesario para tanques/HH'],
+        ['Datos Personal confirmados',False,'Hoja Personal marcada SUPUESTO'],
+        ['IoT físico validado',False,'No hay dispositivo operativo'],
+        ['Benchmarking DSS vs literatura ejecutado',False,'No hay método reproducible implementado'],
+        ['Mejora TO-BE observada',False,'Solo escenarios hipotéticos'],
+    ],columns=['Control','Cumple','Interpretación'])
+    st.dataframe(checks,use_container_width=True,hide_index=True)
+    st.markdown('**Comparación pendiente:** para afirmar competitividad, ejecutar el DSS y la línea base ingenua con las mismas OP, semillas, hardware y presupuesto de tiempo. El Pareto descriptivo no demuestra superioridad.')
+    st.markdown('**Revisión del responsable:** documentar pertinencia de pérdidas, factibilidad de acciones, observaciones y firma/código del revisor. No sustituye mediciones posteriores.')
+    st.markdown('**Protocolo:** 50 réplicas, 6 meses, 60 s provisional; calibración separada de evaluación si se ajustan parámetros. Umbrales y V2/V5 pendientes de aprobación del asesor.')
+    st.download_button('Exportar auditoría',checks.to_csv(index=False).encode('utf-8-sig'),'auditoria_DSS_V6.csv','text/csv')
+    st.caption(f'Entorno: Python {platform.python_version()} · pandas {pd.__version__} · numpy {np.__version__}. Registrar versiones del equipo donde se ejecuten las comparaciones.')
+
+with pages[5]:
+    st.subheader('Evidencia importada desde V5: 50 réplicas de seis meses')
+    if v5.empty:
+        st.warning('El archivo cargado no contiene RESULTADOS_V5. Carga el Excel integrado.')
+    else:
+        v5.columns=v5.columns.astype(str).str.strip()
+        for c in ['productividad','recuperacion_supuesta','capacidad_gal','HH','tanques']:
+            v5[c]=pd.to_numeric(v5[c],errors='coerce')
+        st.info('Estas son proyecciones ya generadas en V5, NO corridas del DSS contra una línea base.')
+        x=v5[(v5['alternativa']=='A_produccion_constante_HH_menores')].copy()
+        caps_v5=sorted(x['capacidad_gal'].dropna().unique())
+        cap_v5=st.selectbox('Capacidad a analizar (gal)',caps_v5,key='cap_v5')
+        y=x[x['capacidad_gal']==cap_v5].copy()
+        summary=y.groupby('recuperacion_supuesta',as_index=False).agg(
+            media_productividad=('productividad','mean'),
+            minimo=('productividad','min'),maximo=('productividad','max'),
+            replicas=('replica','nunique'))
+        p0=summary.loc[summary['recuperacion_supuesta']==0,'media_productividad']
+        if len(p0) and p0.iloc[0]>0:
+            summary['mejora_proyectada_pct']=(summary['media_productividad']/p0.iloc[0]-1)*100
+        st.dataframe(summary,use_container_width=True,hide_index=True)
+        st.plotly_chart(px.line(summary,x='recuperacion_supuesta',y='mejora_proyectada_pct',
+            markers=True,title=f'Sensibilidad V5 de tanques/HH: {int(cap_v5):,} gal (hipotética)',
+            labels={'recuperacion_supuesta':'Fracción recuperada de HH NVA',
+                    'mejora_proyectada_pct':'Mejora proyectada (%)'}),use_container_width=True)
+        if not v5_seeds.empty:
+            st.metric('Semillas de evaluación documentadas',v5_seeds['semilla_evaluacion'].nunique()
+                      if 'semilla_evaluacion' in v5_seeds else len(v5_seeds))
+        st.download_button('Descargar resultados V5 originales',v5.to_csv(index=False).encode('utf-8-sig'),
+            'V5_resultados_integrados.csv','text/csv')
+        st.warning('No afirmar superioridad del DSS: no hay ejecución comparable de la línea base ni resultados empresariales posteriores a implementación.')
