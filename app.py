@@ -8,7 +8,7 @@ import plotly.express as px
 st.set_page_config(page_title='DSS | Productividad industrial', page_icon='🏭', layout='wide')
 st.markdown('''<style>.block-container{padding-top:1.3rem;max-width:1500px}div[data-testid="stMetric"]{background:#f2f5fa;border:1px solid #dce5ef;padding:14px;border-radius:12px}h1,h2,h3{color:#17324d}.stAlert{border-radius:10px}</style>''',unsafe_allow_html=True)
 st.title('DSS | Productividad de mano de obra')
-st.caption('Empresa A · Fabricación de tanques de acero · Versión V7 · Integración histórica y validación V5 · Plan pendiente de aprobación del asesor')
+st.caption('Empresa A · Fabricación de tanques de acero · Versión V8 · Panel integrado y decisiones · Plan pendiente de aprobación del asesor')
 
 CAPS=[250,1000,5000]
 @st.cache_data(show_spinner=False)
@@ -81,19 +81,29 @@ seed_master=st.sidebar.number_input('Semilla maestra',min_value=1,value=20261114
 limit=st.sidebar.number_input('Umbral provisional por réplica (segundos)',min_value=1,value=60)
 st.sidebar.warning('Recuperación 40 % = meta/escenario, no resultado observado. Personal = SUPUESTO.')
 
-pages=st.tabs(['Resumen ejecutivo','Diagnóstico y priorización','AS-IS / TO-BE','Escenarios y réplicas','Validación y evidencias','Resultados V5 integrados'])
-with pages[0]:
+SECCIONES=['Resumen ejecutivo','Diagnóstico y priorización','AS-IS / TO-BE','Escenarios y réplicas','Validación y evidencias','Resultados V5 integrados','Información integrada','Reglas y decisiones']
+st.sidebar.divider()
+st.sidebar.subheader('Navegación')
+page=st.sidebar.radio('Ir a sección',SECCIONES,label_visibility='collapsed')
+st.sidebar.caption('Todas las secciones se seleccionan aquí, sin pestañas horizontales.')
+if page == 'Resumen ejecutivo':
     st.subheader('Situación histórica AS-IS')
     st.info('AS-IS histórico: tanques terminados / HH total OP, por capacidad. TO-BE: mejora PROYECTADA, no observada.')
     a,b,c,d=st.columns(4)
     a.metric('OP',f'{len(base):,}');b.metric('Tanques',fmt(base['Cantidad'].sum(),0));c.metric('HH totales',fmt(base['HH total OP'].sum(),1));d.metric('HH NVA',fmt(base['HH NVA'].sum(),1))
+    # Indicador agregado DESCRIPTIVO; no equipara esfuerzo entre tamaños.
+    total_tanques=base['Cantidad'].sum()
+    total_hh=base['HH total OP'].sum()
+    p_global=total_tanques/total_hh if total_hh>0 else float('nan')
+    st.metric('Productividad general histórica (tanques físicos / HH)',f'{p_global:.6f}')
+    st.warning('Indicador agregado descriptivo: suma tanques de tamaños diferentes. No debe utilizarse para comparar eficiencia entre mezclas de producción ni para afirmar mejoras sin equivalencias validadas. La productividad por capacidad sigue siendo el indicador de evaluación.')
     tab=productivity(base);st.dataframe(tab.rename(columns={'tanques_HH':'Tanques/HH','distancia':'Recorridos (m)'}),use_container_width=True,hide_index=True)
     fig=px.bar(tab,x='Capacidad gal',y='tanques_HH',text_auto='.4f',title='Productividad histórica por capacidad',labels={'tanques_HH':'Tanques / HH'})
     st.plotly_chart(fig,use_container_width=True)
     monthly=base.groupby(['Mes','Capacidad gal'],as_index=False).agg(tanques=('Cantidad','sum'),hh=('HH total OP','sum'))
     monthly['productividad']=monthly['tanques']/monthly['hh']
     st.plotly_chart(px.line(monthly,x='Mes',y='productividad',color='Capacidad gal',markers=True,title='Evolución mensual (sin mezclar capacidades)'),use_container_width=True)
-with pages[1]:
+if page == 'Diagnóstico y priorización':
     st.subheader('Pérdidas observadas y priorización orientativa')
     n=nv.groupby('Actividad sin valor',as_index=False).agg(HH=('HH perdidas','sum'),distancia_m=('Distancia recorrida m','sum')).sort_values('HH',ascending=False)
     st.plotly_chart(px.bar(n,x='Actividad sin valor',y='HH',title='Pareto de HH NVA por actividad'),use_container_width=True)
@@ -105,7 +115,7 @@ with pages[1]:
     st.markdown('**Reglas de recomendación (heurísticas, no optimizadas):** búsquedas → 5S; recorridos → SLP; paradas → TPM; eventos digitales → lógica IoT simulada. Se debe comprobar su pertinencia con el responsable.')
     st.warning('MTTR = duración media de reparación solo si cada evento corresponde a una reparación completa. MTBF requiere horas efectivas de operación por máquina, no disponibles de forma verificada.')
     if len(pa): st.metric('Duración media de parada (proxy; no MTTR validado)',f"{pa['Horas parada / reparación'].mean():.2f} h")
-with pages[2]:
+if page == 'AS-IS / TO-BE':
     st.subheader('Comparación AS-IS / TO-BE hipotética')
     st.caption('Las HH recuperadas se calculan como recuperación × HH NVA; no se aplica sobre todas las HH ni sobre el 11 % estimado.')
     alternative=st.radio('Interpretación TO-BE',['Producción constante: menos HH','HH constantes: capacidad equivalente potencial'],horizontal=True)
@@ -119,6 +129,15 @@ with pages[2]:
             qt=r['tanques']*r['HH']/ht;hh=r['HH'];note='Equivalentes continuos, NO tanques terminados'
         rows.append({'Capacidad gal':int(r['Capacidad gal']),'Tanques AS-IS':r['tanques'],'HH AS-IS':r['HH'],'Tanques TO-BE hipotéticos':qt,'HH TO-BE hipotéticas':hh,'Productividad AS-IS':r['tanques_HH'],'Productividad TO-BE hipotética':qt/hh,'Variación proyectada (%)':100*((qt/hh)/r['tanques_HH']-1),'HH NVA recuperables hipotéticas':hrec,'Interpretación':note})
     tobe=pd.DataFrame(rows)
+    hh_total=base['HH total OP'].sum(); nva_total=base['HH NVA'].sum(); tanques_total=base['Cantidad'].sum()
+    hh_tobe_general=hh_total-rec*nva_total
+    if hh_total>0 and hh_tobe_general>0:
+        st.subheader('Productividad general: AS-IS y TO-BE proyectado')
+        g1,g2,g3=st.columns(3)
+        g1.metric('General AS-IS (tanques/HH)',f'{tanques_total/hh_total:.6f}')
+        g2.metric('General TO-BE hipotético (tanques/HH)',f'{tanques_total/hh_tobe_general:.6f}')
+        g3.metric('Variación proyectada (%)',f'{100*(hh_total/hh_tobe_general-1):.2f}%')
+        st.warning('Agregado físico sin ponderar capacidades: solo lectura descriptiva con la mezcla actual. El 40 % es recuperación hipotética de HH NVA, no mejora empírica de productividad.')
     st.dataframe(tobe,use_container_width=True,hide_index=True)
     chart=tobe.melt(id_vars=['Capacidad gal'],value_vars=['Productividad AS-IS','Productividad TO-BE hipotética'],var_name='Estado',value_name='Tanques/HH')
     st.plotly_chart(px.bar(chart,x='Capacidad gal',y='Tanques/HH',color='Estado',barmode='group',title='Comparación por capacidad: observado vs hipotético'),use_container_width=True)
@@ -185,7 +204,7 @@ def simulate(source,months,replicas,period,master,scenario,threshold):
         seeds.append({'escenario':scenario,'replica':idx,'semilla':seed,'ventana':'|'.join(win),'tiempo_s':elapsed,'excede_umbral_provisional':elapsed>threshold})
     return pd.DataFrame(outputs),pd.concat(samples,ignore_index=True),pd.DataFrame(seeds)
 
-with pages[3]:
+if page == 'Escenarios y réplicas':
     st.subheader('Generación de escenarios experimentales')
     st.info('Cada réplica abarca una ventana contigua de seis meses (configurable). El bootstrap preserva asociaciones entre variables de cada OP, pero no crea evidencia empresarial nueva.')
     scenarios=st.multiselect('Escenarios a generar',['Típico','Borde','Extremo','Patológico'],default=['Típico'])
@@ -216,7 +235,7 @@ with pages[3]:
             st.session_state['exp_details'].to_excel(writer,sheet_name='OP_sinteticas',index=False)
             ss.to_excel(writer,sheet_name='Semillas_y_tiempos',index=False)
         st.download_button('Descargar evidencia experimental (.xlsx)',z.getvalue(),'DSS_V6_escenarios.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-with pages[4]:
+if page == 'Validación y evidencias':
     st.subheader('Auditoría y preparación de validación')
     mismatch=(base['HH fabricación']+base['HH NVA']-base['HH total OP']).abs()
     mismatch_nva=(base['HH NVA']-base['nva_reg']).abs()
@@ -237,7 +256,7 @@ with pages[4]:
     st.download_button('Exportar auditoría',checks.to_csv(index=False).encode('utf-8-sig'),'auditoria_DSS_V6.csv','text/csv')
     st.caption(f'Entorno: Python {platform.python_version()} · pandas {pd.__version__} · numpy {np.__version__}. Registrar versiones del equipo donde se ejecuten las comparaciones.')
 
-with pages[5]:
+if page == 'Resultados V5 integrados':
     st.subheader('Evidencia importada desde V5: 50 réplicas de seis meses')
     if v5.empty:
         st.warning('El archivo cargado no contiene RESULTADOS_V5. Carga el Excel integrado.')
@@ -268,3 +287,68 @@ with pages[5]:
         st.download_button('Descargar resultados V5 originales',v5.to_csv(index=False).encode('utf-8-sig'),
             'V5_resultados_integrados.csv','text/csv')
         st.warning('No afirmar superioridad del DSS: no hay ejecución comparable de la línea base ni resultados empresariales posteriores a implementación.')
+
+if page == 'Información integrada':
+    st.subheader('Vista integrada de datos y resultados')
+    st.caption('Vista por OP: producción y HH históricas, pérdidas NVA conciliadas y escenario de recuperación. Las paradas se vinculan solo por mes, NO por OP.')
+    integ=base.copy()
+    integ['HH_NVA_registradas']=integ['nva_reg']
+    integ['Recorridos_registrados_m']=integ['dist_reg']
+    integ['HH_recuperacion_hipotetica']=rec*integ['HH NVA']
+    integ['HH_TOBE_proyectadas']=integ['HH total OP']-integ['HH_recuperacion_hipotetica']
+    integ['Productividad_ASIS_OP']=np.where(integ['HH total OP']>0,integ['Cantidad']/integ['HH total OP'],np.nan)
+    integ['Productividad_TOBE_OP_proyectada']=np.where(integ['HH_TOBE_proyectadas']>0,integ['Cantidad']/integ['HH_TOBE_proyectadas'],np.nan)
+    integ['Origen_OP']='REAL_DECLARADO (HH mixtas)'
+    integ['Origen_TOBE']='ESTIMADO/ESCENARIO; NO OBSERVADO'
+    st.dataframe(integ,use_container_width=True,hide_index=True,height=450)
+    st.markdown('#### Paradas históricas: tabla independiente')
+    st.dataframe(pa,use_container_width=True,hide_index=True)
+    st.markdown('#### Resultados V5: réplicas sintéticas independientes de los registros empresariales')
+    if not v5.empty:
+        st.dataframe(v5.head(200),use_container_width=True,hide_index=True)
+    else:
+        st.info('El libro cargado no contiene RESULTADOS_V5.')
+    st.markdown('#### Descargar información integrada')
+    buf=io.BytesIO()
+    with pd.ExcelWriter(buf,engine='xlsxwriter') as writer:
+        integ.to_excel(writer,sheet_name='INTEGRADO_POR_OP',index=False)
+        pa.to_excel(writer,sheet_name='PARADAS_HISTORICAS',index=False)
+        nv.to_excel(writer,sheet_name='NVA_HISTORICAS',index=False)
+        if not v5.empty:v5.to_excel(writer,sheet_name='RESULTADOS_V5',index=False)
+        if not v5_seeds.empty:v5_seeds.to_excel(writer,sheet_name='SEMILLAS_V5',index=False)
+        pd.DataFrame([
+            ['AS-IS','HH total OP, sin volver a sumar NVA','REAL_DECLARADO / HH mixtas'],
+            ['TO-BE','HH total OP - porcentaje de recuperación × HH NVA','ESTIMADO'],
+            ['General','Total de tanques físicos / total HH; mezcla heterogénea','DESCRIPTIVO; NO COMPARABLE ENTRE MEZCLAS'],
+            ['Benchmarking','No ejecutado: línea base y método publicado pendientes','PENDIENTE'],
+            ['IoT','Solo eventos simulados; no existe dispositivo medido','NO VALIDADO'],
+            ['Plan','V2/V5 sujeto a aprobación del asesor','PENDIENTE']
+        ],columns=['Regla','Decisión','Estado']).to_excel(writer,sheet_name='REGLAS_Y_DECISIONES',index=False)
+    st.download_button('Descargar Excel integrado actualizado',buf.getvalue(),
+        'DSS_V8_Informacion_Integrada.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+if page == 'Reglas y decisiones':
+    st.subheader('Reglas del DSS y decisiones metodológicas')
+    reglas=[
+        ('Productividad por capacidad','Tanques terminados de cada capacidad / HH total OP de esa capacidad','Indicador principal; evitar mezclar capacidades'),
+        ('Productividad general','Suma de tanques terminados / suma HH de todas las OP','Solo descriptivo; mezcla de tamaños sin equivalencias'),
+        ('HH históricas','Tomar HH total OP; no agregar HH NVA otra vez','Verificar doble conteo y HH estimadas'),
+        ('Recuperación TO-BE','0, 10, 20, 30 o 40 % de HH NVA','Meta/escenario; no resultado observado'),
+        ('Producción constante','Mismos tanques, menos HH proyectadas','No demuestra ahorro ejecutado'),
+        ('HH constantes','Tanques equivalentes potenciales; no unidades terminadas','Requiere capacidades/tiempos factibles para convertir a unidades'),
+        ('5S','Priorizar pérdidas por búsqueda y orden','Heurística sujeta a revisión del responsable'),
+        ('SLP','Priorizar recorridos innecesarios','No demuestra reducción real de distancias'),
+        ('TPM','Priorizar paradas y criticidad','MTBF necesita horas operativas verificadas'),
+        ('IoT','Eventos digitales simulados','No validar sensores físicos'),
+        ('Réplicas','50 corridas, seis meses cada una, semillas documentadas','No equivalen a 50 observaciones empresariales independientes'),
+        ('Comparación','Mismas entradas, hardware, semillas y presupuesto por método','No se ha ejecutado benchmarking DSS vs línea base'),
+        ('Umbral','60 segundos por réplica','Provisional, pendiente de asesor'),
+        ('Procedencia','REAL_DECLARADO, ESTIMADO, SINTÉTICO, SUPUESTO','Personal permanece SUPUESTO'),
+        ('Aprobación','Plan V2/V5 y umbrales','PENDIENTES DE APROBACIÓN DEL ASESOR')
+    ]
+    rules_df=pd.DataFrame(reglas,columns=['Regla / decisión','Aplicación','Limitación / estado'])
+    st.dataframe(rules_df,use_container_width=True,hide_index=True,height=580)
+    st.download_button('Descargar reglas y decisiones',rules_df.to_csv(index=False).encode('utf-8-sig'),
+                       'DSS_V8_Reglas_y_Decisiones.csv','text/csv')
+    st.warning('La utilidad del DSS debe demostrarse con pruebas y comparación de decisiones, no solo con proyecciones TO-BE.')
