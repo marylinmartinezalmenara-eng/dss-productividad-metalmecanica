@@ -5,10 +5,28 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-st.set_page_config(page_title='DSS | Productividad industrial', page_icon='🏭', layout='wide')
-st.markdown('''<style>.block-container{padding-top:1.3rem;max-width:1500px}div[data-testid="stMetric"]{background:#f2f5fa;border:1px solid #dce5ef;padding:14px;border-radius:12px}h1,h2,h3{color:#17324d}.stAlert{border-radius:10px}</style>''',unsafe_allow_html=True)
+st.set_page_config(page_title='DSS | Productividad industrial', page_icon='🏭', layout='wide', initial_sidebar_state='expanded')
+st.markdown("""<style>
+.block-container{padding-top:1.0rem;max-width:1380px;padding-bottom:2rem}
+h1{font-size:1.85rem!important;letter-spacing:-.04em;color:#142c45!important}
+h2,h3{color:#183a56!important;letter-spacing:-.02em}
+section[data-testid="stSidebar"]{background:#f5f8fc;border-right:1px solid #e1e8ef}
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"]{padding-top:1rem}
+div[data-testid="stMetric"]{background:#fff;border:1px solid #e1e8ef;padding:12px 15px;border-radius:12px;box-shadow:0 1px 3px #12243a0a}
+div[data-testid="stMetricValue"]{font-size:1.5rem!important;color:#143755}
+div[data-testid="stMetricLabel"]{font-size:.8rem}
+.stAlert{border-radius:9px}
+[data-testid="stPlotlyChart"]{border:1px solid #e5ebf2;border-radius:12px;padding:4px;background:#fff}
+</style>""",unsafe_allow_html=True)
+
+def compact_chart(fig, **kwargs):
+    fig.update_layout(height=285,margin=dict(l=20,r=15,t=48,b=30),
+        font=dict(size=11),title_font=dict(size=13),legend=dict(font=dict(size=10)),
+        paper_bgcolor='white',plot_bgcolor='white')
+    st.plotly_chart(fig,use_container_width=True,**{k:v for k,v in kwargs.items() if k!='use_container_width'})
+
 st.title('DSS | Productividad de mano de obra')
-st.caption('Empresa A · Fabricación de tanques de acero · Versión V9 · Panel integrado y decisiones · Plan pendiente de aprobación del asesor')
+st.caption('Empresa A · Fabricación de tanques de acero · Versión V10 · Panel integrado y decisiones · Plan pendiente de aprobación del asesor')
 
 CAPS=[250,1000,5000]
 @st.cache_data(show_spinner=False)
@@ -52,7 +70,11 @@ def productivity(df):
 
 def fmt(n,dec=3): return f'{n:,.{dec}f}'
 
-st.sidebar.header('Datos y configuración')
+SECCIONES=['Resumen ejecutivo','Diagnóstico y priorización','AS-IS / TO-BE','Escenarios y réplicas','Validación y evidencias','Resultados V5 integrados','Información integrada','Reglas y decisiones']
+st.sidebar.markdown('### 🧭 Navegación')
+page=st.sidebar.radio('Selecciona una sección',SECCIONES,key='nav_lateral',label_visibility='collapsed')
+st.sidebar.divider()
+st.sidebar.markdown('### 📁 Datos y configuración')
 upload=st.sidebar.file_uploader('Cargar Excel integrado V5 (.xlsx)',type=['xlsx'])
 default=Path('/mnt/data/Validacion_DSS_Integrada_Rubrica(1).xlsx')
 if upload is None and default.exists():
@@ -74,18 +96,14 @@ if not selected or not capacities: st.warning('Selecciona al menos un mes y una 
 base=op[op['Mes'].isin(selected)&op['Capacidad gal'].isin(capacities)].copy()
 pa=par[par['Mes'].isin(selected)].copy()
 nv=nva[nva['Mes'].isin(selected)&nva['Capacidad gal'].isin(capacities)].copy()
-rec=st.sidebar.slider('Recuperación hipotética de HH NVA (%)',0,40,40,5)/100
-nrep=st.sidebar.number_input('Réplicas por escenario',min_value=30,max_value=500,value=50,step=10)
-period=st.sidebar.number_input('Meses por réplica',min_value=1,max_value=12,value=6)
-seed_master=st.sidebar.number_input('Semilla maestra',min_value=1,value=20261114)
-limit=st.sidebar.number_input('Umbral provisional por réplica (segundos)',min_value=1,value=60)
-st.sidebar.warning('Recuperación 40 % = meta/escenario, no resultado observado. Personal = SUPUESTO.')
+with st.sidebar.expander('⚙️ Parámetros y escenarios', expanded=False):
+    rec=st.slider('Recuperación hipotética de HH NVA (%)',0,40,40,5)/100
+    nrep=st.number_input('Réplicas por escenario',min_value=30,max_value=500,value=50,step=10)
+    period=st.number_input('Meses por réplica',min_value=1,max_value=12,value=6)
+    seed_master=st.number_input('Semilla maestra',min_value=1,value=20261114)
+    limit=st.number_input('Umbral provisional por réplica (segundos)',min_value=1,value=60)
+st.sidebar.caption('TO-BE hipotético · Personal: SUPUESTO · Plan pendiente de aprobación')
 
-SECCIONES=['Resumen ejecutivo','Diagnóstico y priorización','AS-IS / TO-BE','Escenarios y réplicas','Validación y evidencias','Resultados V5 integrados','Información integrada','Reglas y decisiones']
-# Navegación horizontal: los filtros de datos permanecen en el panel izquierdo.
-st.markdown('### Navegación del DSS')
-page=st.radio('Sección',SECCIONES,horizontal=True,label_visibility='collapsed',key='nav_superior')
-st.divider()
 if page == 'Resumen ejecutivo':
     st.subheader('Situación histórica AS-IS')
     st.info('AS-IS histórico: tanques terminados / HH total OP, por capacidad. TO-BE: mejora PROYECTADA, no observada.')
@@ -95,26 +113,30 @@ if page == 'Resumen ejecutivo':
     total_tanques=base['Cantidad'].sum()
     total_hh=base['HH total OP'].sum()
     p_global=total_tanques/total_hh if total_hh>0 else float('nan')
-    st.metric('Productividad general histórica (tanques físicos / HH)',f'{p_global:.6f}')
+    left_kpi,right_kpi=st.columns(2)
+    left_kpi.metric('Productividad general histórica (tanques físicos / HH)',f'{p_global:.6f}')
     hh_proy=total_hh-rec*base['HH NVA'].sum()
     if total_hh>0 and hh_proy>0:
         mejora_proy=(total_hh/hh_proy-1)*100
-        st.metric('Mejora general TO-BE PROYECTADA (no observada)',f'{mejora_proy:.2f}%',help='Solo recuperación hipotética de HH NVA con producción constante; no implica éxito del DSS ni cambio de mezcla.')
+        right_kpi.metric('Mejora general TO-BE PROYECTADA (no observada)',f'{mejora_proy:.2f}%',help='Solo recuperación hipotética de HH NVA con producción constante; no implica éxito del DSS ni cambio de mezcla.')
     st.warning('Indicador agregado descriptivo: suma tanques de tamaños diferentes. No debe utilizarse para comparar eficiencia entre mezclas de producción ni para afirmar mejoras sin equivalencias validadas. La productividad por capacidad sigue siendo el indicador de evaluación.')
     tab=productivity(base);st.dataframe(tab.rename(columns={'tanques_HH':'Tanques/HH','distancia':'Recorridos (m)'}),use_container_width=True,hide_index=True)
     fig=px.bar(tab,x='Capacidad gal',y='tanques_HH',text_auto='.4f',title='Productividad histórica por capacidad',labels={'tanques_HH':'Tanques / HH'})
-    st.plotly_chart(fig,use_container_width=True)
+    chart_left,chart_right=st.columns(2,gap='medium')
+    with chart_left:
+        compact_chart(fig,use_container_width=True)
     monthly=base.groupby(['Mes','Capacidad gal'],as_index=False).agg(tanques=('Cantidad','sum'),hh=('HH total OP','sum'))
     monthly['productividad']=monthly['tanques']/monthly['hh']
-    st.plotly_chart(px.line(monthly,x='Mes',y='productividad',color='Capacidad gal',markers=True,title='Evolución mensual (sin mezclar capacidades)'),use_container_width=True)
+    with chart_right:
+        compact_chart(px.line(monthly,x='Mes',y='productividad',color='Capacidad gal',markers=True,title='Evolución mensual por capacidad'),use_container_width=True)
 if page == 'Diagnóstico y priorización':
     st.subheader('Pérdidas observadas y priorización orientativa')
     n=nv.groupby('Actividad sin valor',as_index=False).agg(HH=('HH perdidas','sum'),distancia_m=('Distancia recorrida m','sum')).sort_values('HH',ascending=False)
-    st.plotly_chart(px.bar(n,x='Actividad sin valor',y='HH',title='Pareto de HH NVA por actividad'),use_container_width=True)
+    compact_chart(px.bar(n,x='Actividad sin valor',y='HH',title='Pareto de HH NVA por actividad'),use_container_width=True)
     st.dataframe(n,use_container_width=True,hide_index=True)
     st.caption('Regla de línea base ingenua: priorizar únicamente por HH NVA acumuladas. No equivale a una comparación experimental ya ejecutada.')
     p=pa.groupby(['Máquina','Motivo'],as_index=False).agg(horas=('Horas parada / reparación','sum'),eventos=('Motivo','size')).sort_values('horas',ascending=False)
-    st.plotly_chart(px.bar(p,x='Máquina',y='horas',color='Motivo',title='Horas de parada por máquina y motivo'),use_container_width=True)
+    compact_chart(px.bar(p,x='Máquina',y='horas',color='Motivo',title='Horas de parada por máquina y motivo'),use_container_width=True)
     st.dataframe(p,use_container_width=True,hide_index=True)
     st.markdown('**Reglas de recomendación (heurísticas, no optimizadas):** búsquedas → 5S; recorridos → SLP; paradas → TPM; eventos digitales → lógica IoT simulada. Se debe comprobar su pertinencia con el responsable.')
     st.warning('MTTR = duración media de reparación solo si cada evento corresponde a una reparación completa. MTBF requiere horas efectivas de operación por máquina, no disponibles de forma verificada.')
@@ -144,7 +166,7 @@ if page == 'AS-IS / TO-BE':
         st.warning('Agregado físico sin ponderar capacidades: solo lectura descriptiva con la mezcla actual. El 40 % es recuperación hipotética de HH NVA, no mejora empírica de productividad.')
     st.dataframe(tobe,use_container_width=True,hide_index=True)
     chart=tobe.melt(id_vars=['Capacidad gal'],value_vars=['Productividad AS-IS','Productividad TO-BE hipotética'],var_name='Estado',value_name='Tanques/HH')
-    st.plotly_chart(px.bar(chart,x='Capacidad gal',y='Tanques/HH',color='Estado',barmode='group',title='Comparación por capacidad: observado vs hipotético'),use_container_width=True)
+    compact_chart(px.bar(chart,x='Capacidad gal',y='Tanques/HH',color='Estado',barmode='group',title='Comparación por capacidad: observado vs hipotético'),use_container_width=True)
     st.warning('La variación porcentual es una MEJORA PROYECTADA por recuperación hipotética de pérdidas; NO es mejora real medida. El 40 % corresponde a recuperación de pérdidas, no a aumento directo de tanques/HH.')
     st.markdown('#### Sensibilidad de mejora proyectada por capacidad')
     sens=[]
@@ -158,7 +180,7 @@ if page == 'AS-IS / TO-BE':
                     'Mejora de productividad proyectada (%)':100*(r['HH']/hh_new-1)})
     sensitivity=pd.DataFrame(sens)
     st.dataframe(sensitivity,use_container_width=True,hide_index=True)
-    st.plotly_chart(px.line(sensitivity,x='Recuperación de NVA',y='Mejora de productividad proyectada (%)',
+    compact_chart(px.line(sensitivity,x='Recuperación de NVA',y='Mejora de productividad proyectada (%)',
         color='Capacidad gal',markers=True,title='Mejora de productividad proyectada, NO observada'),use_container_width=True)
     st.download_button('Exportar sensibilidad TO-BE',tobe.to_csv(index=False).encode('utf-8-sig'),'tobe_hipotetico.csv','text/csv')
 
@@ -232,7 +254,7 @@ if page == 'Escenarios y réplicas':
         st.metric('Duración total',f"{st.session_state['exp_elapsed']:.2f} s")
         if ss['excede_umbral_provisional'].any():st.error('Contingencia: una o más réplicas excedieron el umbral provisional.')
         st.dataframe(rr.head(100),use_container_width=True,hide_index=True)
-        st.plotly_chart(px.box(rr,x='capacidad_gal',y='productividad_ASIS_sintetica',color='escenario',title='Variabilidad sintética por escenario y capacidad'),use_container_width=True)
+        compact_chart(px.box(rr,x='capacidad_gal',y='productividad_ASIS_sintetica',color='escenario',title='Variabilidad sintética por escenario y capacidad'),use_container_width=True)
         z=io.BytesIO()
         with pd.ExcelWriter(z,engine='xlsxwriter') as writer:
             rr.to_excel(writer,sheet_name='Resultados_replicas',index=False)
@@ -297,7 +319,7 @@ if page == 'Resultados V5 integrados':
                 umbral=st.number_input('Umbral de mejora considerable (%) — PROPUESTO, no aprobado',min_value=0.0,max_value=200.0,value=10.0,step=1.0)
                 st.write(f'Réplicas que alcanzan el umbral propuesto: **{int((gains>=umbral).sum())} de {len(gains)}**.')
                 st.caption('El umbral es exploratorio y debe fijarse antes de la evaluación definitiva. Una mejora proyectada no demuestra efecto causal ni superioridad del DSS.')
-        st.plotly_chart(px.line(summary,x='recuperacion_supuesta',y='mejora_proyectada_pct',
+        compact_chart(px.line(summary,x='recuperacion_supuesta',y='mejora_proyectada_pct',
             markers=True,title=f'Sensibilidad V5 de tanques/HH: {int(cap_v5):,} gal (hipotética)',
             labels={'recuperacion_supuesta':'Fracción recuperada de HH NVA',
                     'mejora_proyectada_pct':'Mejora proyectada (%)'}),use_container_width=True)
@@ -345,7 +367,7 @@ if page == 'Información integrada':
             ['Plan','V2/V5 sujeto a aprobación del asesor','PENDIENTE']
         ],columns=['Regla','Decisión','Estado']).to_excel(writer,sheet_name='REGLAS_Y_DECISIONES',index=False)
     st.download_button('Descargar Excel integrado actualizado',buf.getvalue(),
-        'DSS_V8_Informacion_Integrada.xlsx',
+        'DSS_V10_Informacion_Integrada.xlsx',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if page == 'Reglas y decisiones':
@@ -370,5 +392,5 @@ if page == 'Reglas y decisiones':
     rules_df=pd.DataFrame(reglas,columns=['Regla / decisión','Aplicación','Limitación / estado'])
     st.dataframe(rules_df,use_container_width=True,hide_index=True,height=580)
     st.download_button('Descargar reglas y decisiones',rules_df.to_csv(index=False).encode('utf-8-sig'),
-                       'DSS_V8_Reglas_y_Decisiones.csv','text/csv')
+                       'DSS_V10_Reglas_y_Decisiones.csv','text/csv')
     st.warning('La utilidad del DSS debe demostrarse con pruebas y comparación de decisiones, no solo con proyecciones TO-BE.')
