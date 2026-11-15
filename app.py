@@ -8,7 +8,7 @@ import plotly.express as px
 st.set_page_config(page_title='DSS | Productividad industrial', page_icon='🏭', layout='wide')
 st.markdown('''<style>.block-container{padding-top:1.3rem;max-width:1500px}div[data-testid="stMetric"]{background:#f2f5fa;border:1px solid #dce5ef;padding:14px;border-radius:12px}h1,h2,h3{color:#17324d}.stAlert{border-radius:10px}</style>''',unsafe_allow_html=True)
 st.title('DSS | Productividad de mano de obra')
-st.caption('Empresa A · Fabricación de tanques de acero · Versión V8 · Panel integrado y decisiones · Plan pendiente de aprobación del asesor')
+st.caption('Empresa A · Fabricación de tanques de acero · Versión V9 · Panel integrado y decisiones · Plan pendiente de aprobación del asesor')
 
 CAPS=[250,1000,5000]
 @st.cache_data(show_spinner=False)
@@ -82,10 +82,10 @@ limit=st.sidebar.number_input('Umbral provisional por réplica (segundos)',min_v
 st.sidebar.warning('Recuperación 40 % = meta/escenario, no resultado observado. Personal = SUPUESTO.')
 
 SECCIONES=['Resumen ejecutivo','Diagnóstico y priorización','AS-IS / TO-BE','Escenarios y réplicas','Validación y evidencias','Resultados V5 integrados','Información integrada','Reglas y decisiones']
-st.sidebar.divider()
-st.sidebar.subheader('Navegación')
-page=st.sidebar.radio('Ir a sección',SECCIONES,label_visibility='collapsed')
-st.sidebar.caption('Todas las secciones se seleccionan aquí, sin pestañas horizontales.')
+# Navegación horizontal: los filtros de datos permanecen en el panel izquierdo.
+st.markdown('### Navegación del DSS')
+page=st.radio('Sección',SECCIONES,horizontal=True,label_visibility='collapsed',key='nav_superior')
+st.divider()
 if page == 'Resumen ejecutivo':
     st.subheader('Situación histórica AS-IS')
     st.info('AS-IS histórico: tanques terminados / HH total OP, por capacidad. TO-BE: mejora PROYECTADA, no observada.')
@@ -96,6 +96,10 @@ if page == 'Resumen ejecutivo':
     total_hh=base['HH total OP'].sum()
     p_global=total_tanques/total_hh if total_hh>0 else float('nan')
     st.metric('Productividad general histórica (tanques físicos / HH)',f'{p_global:.6f}')
+    hh_proy=total_hh-rec*base['HH NVA'].sum()
+    if total_hh>0 and hh_proy>0:
+        mejora_proy=(total_hh/hh_proy-1)*100
+        st.metric('Mejora general TO-BE PROYECTADA (no observada)',f'{mejora_proy:.2f}%',help='Solo recuperación hipotética de HH NVA con producción constante; no implica éxito del DSS ni cambio de mezcla.')
     st.warning('Indicador agregado descriptivo: suma tanques de tamaños diferentes. No debe utilizarse para comparar eficiencia entre mezclas de producción ni para afirmar mejoras sin equivalencias validadas. La productividad por capacidad sigue siendo el indicador de evaluación.')
     tab=productivity(base);st.dataframe(tab.rename(columns={'tanques_HH':'Tanques/HH','distancia':'Recorridos (m)'}),use_container_width=True,hide_index=True)
     fig=px.bar(tab,x='Capacidad gal',y='tanques_HH',text_auto='.4f',title='Productividad histórica por capacidad',labels={'tanques_HH':'Tanques / HH'})
@@ -277,6 +281,22 @@ if page == 'Resultados V5 integrados':
         if len(p0) and p0.iloc[0]>0:
             summary['mejora_proyectada_pct']=(summary['media_productividad']/p0.iloc[0]-1)*100
         st.dataframe(summary,use_container_width=True,hide_index=True)
+        # Pares de la misma réplica: recuperación 0% vs recuperación elegida.
+        # No compara DSS con línea base; solo cuantifica sensibilidad condicional.
+        paired=y.pivot_table(index='replica',columns='recuperacion_supuesta',values='productividad',aggfunc='first')
+        if 0.0 in paired.columns and float(rec) in paired.columns:
+            paired=paired[[0.0,float(rec)]].dropna()
+            paired=paired[paired[0.0]>0]
+            gains=(paired[float(rec)]/paired[0.0]-1)*100
+            if len(gains):
+                st.markdown('#### ¿Las réplicas proyectan una mejora considerable?')
+                a,b,c=st.columns(3)
+                a.metric('Mejora media PROYECTADA',f'{gains.mean():.2f}%')
+                b.metric('Réplicas con proyección positiva',f'{int((gains>0).sum())}/{len(gains)}')
+                c.metric('Rango de mejora proyectada',f'{gains.min():.2f}% – {gains.max():.2f}%')
+                umbral=st.number_input('Umbral de mejora considerable (%) — PROPUESTO, no aprobado',min_value=0.0,max_value=200.0,value=10.0,step=1.0)
+                st.write(f'Réplicas que alcanzan el umbral propuesto: **{int((gains>=umbral).sum())} de {len(gains)}**.')
+                st.caption('El umbral es exploratorio y debe fijarse antes de la evaluación definitiva. Una mejora proyectada no demuestra efecto causal ni superioridad del DSS.')
         st.plotly_chart(px.line(summary,x='recuperacion_supuesta',y='mejora_proyectada_pct',
             markers=True,title=f'Sensibilidad V5 de tanques/HH: {int(cap_v5):,} gal (hipotética)',
             labels={'recuperacion_supuesta':'Fracción recuperada de HH NVA',
